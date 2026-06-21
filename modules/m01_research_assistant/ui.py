@@ -131,9 +131,15 @@ def render() -> None:
         run_clicked = st.button("Run Research", type="primary", disabled=not topic.strip())
     with col_clear:
         if st.button("Clear / New topic"):
-            for key in list(st.session_state.keys()):
-                if key.startswith("m01_"):
-                    del st.session_state[key]
+            # Explicitly reset each widget to its default value.
+            # Deleting keys is unreliable — Streamlit can restore old values from the browser.
+            st.session_state["m01_topic_input"]    = ""
+            st.session_state["m01_audience_input"] = AUDIENCE_OPTIONS[0]
+            st.session_state["m01_format_input"]   = FORMAT_OPTIONS[0]
+            st.session_state["m01_length_input"]   = LENGTH_OPTIONS[1]
+            # Delete result keys so agent panels reset to Waiting
+            for key in ["m01_final", "m01_full_state", "m01_agent_outputs"]:
+                st.session_state.pop(key, None)
             st.rerun()
 
     st.markdown("---")
