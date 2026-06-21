@@ -1,0 +1,8 @@
+streamlit
+langgraph
+groq
+google-genai
+tavily-python
+python-docx
+python-dotenv
+pypdf2
