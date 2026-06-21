@@ -3,6 +3,8 @@ langgraph
 groq
 google-genai
 tavily-python
+exa-py
+google-search-results
 python-docx
 python-dotenv
 pypdf2

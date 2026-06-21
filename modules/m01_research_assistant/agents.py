@@ -8,9 +8,8 @@ The return value is a partial state update — only the fields this agent change
 LangGraph merges it back into the full state before passing to the next node.
 """
 
-import os
 import re
-from tavily import TavilyClient
+from utils.search_client import get_search_chain
 
 # Format-specific structure instructions injected into the Writer prompt.
 FORMAT_INSTRUCTIONS = {
@@ -119,41 +118,13 @@ def run_planner(state: dict, chain) -> dict:
 
 def run_researcher(state: dict) -> dict:
     """
-    Runs a Tavily web search for each research question.
-    Collects results and source URLs.
+    Searches the web for each research question using the search fallback chain.
+    Tries Tavily first, then Exa, then Serper. Never crashes the pipeline.
     Returns: research (dict), sources (list)
     """
     questions = state["questions"]
-    api_key = os.getenv("TAVILY_API_KEY")
-
-    if not api_key:
-        # Graceful degradation: return empty research rather than crashing
-        return {
-            "research": {q: [] for q in questions},
-            "sources": [],
-        }
-
-    client = TavilyClient(api_key=api_key)
-    research = {}
-    sources = []
-
-    for question in questions:
-        try:
-            result = client.search(
-                query=question,
-                search_depth="advanced",
-                max_results=3,
-            )
-            hits = result.get("results", [])
-            research[question] = hits
-            for hit in hits:
-                url = hit.get("url", "")
-                if url and url not in sources:
-                    sources.append(url)
-        except Exception:
-            # If one question fails, record empty results and continue
-            research[question] = []
-
+    search = get_search_chain()
+    research, sources = search.search_multi(questions, max_results=3)
     return {"research": research, "sources": sources}
 
 
