@@ -130,12 +130,11 @@ def render() -> None:
     with col_btn:
         run_clicked = st.button("Run Research", type="primary", disabled=not topic.strip())
     with col_clear:
-        if st.session_state.get("m01_final"):
-            if st.button("Clear / New topic"):
-                for key in list(st.session_state.keys()):
-                    if key.startswith("m01_"):
-                        del st.session_state[key]
-                st.rerun()
+        if st.button("Clear / New topic"):
+            for key in list(st.session_state.keys()):
+                if key.startswith("m01_"):
+                    del st.session_state[key]
+            st.rerun()
 
     st.markdown("---")
     st.markdown("⚠️ *AI-generated output. Review before use.*")
