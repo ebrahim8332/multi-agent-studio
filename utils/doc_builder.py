@@ -86,14 +86,16 @@ def build_research_doc(state: dict) -> bytes:
     doc = Document()
     _set_normal_style(doc)
 
+    # Use the Writer-generated title if available, fall back to raw topic
     topic = state.get("topic", "Research Report")
+    title = state.get("title") or topic
     final_text = state.get("final", state.get("draft", "No output generated."))
     sources = state.get("sources", [])
     model_used = state.get("model_used", "unknown")
     today = date.today().strftime("%B %d, %Y")
 
     # ── Title block ──────────────────────────────────────────────────────────
-    title_para = doc.add_heading(topic, level=0)
+    title_para = doc.add_heading(title, level=0)
     title_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
     meta = doc.add_paragraph(f"Research Assistant  |  {today}")

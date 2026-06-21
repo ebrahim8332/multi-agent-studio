@@ -255,7 +255,9 @@ def run_writer(state: dict, chain) -> dict:
                 f"Format instructions:\n{format_instructions}\n\n"
                 f"Evidence gathered:\n{evidence_text}\n\n"
                 f"Source quality assessment:\n{critique}\n\n"
-                "Write a complete paper following the format instructions above exactly. "
+                "Begin your response with a single line in this exact format:\n"
+                "TITLE: [a short, professional title for this paper — 8 words or fewer]\n\n"
+                "Then write the complete paper following the format instructions above exactly. "
                 "Hit the target length. Calibrate vocabulary and detail for the stated audience. "
                 "Where evidence is weak, say so plainly. Do not invent facts."
             ),
@@ -263,7 +265,19 @@ def run_writer(state: dict, chain) -> dict:
     ]
 
     response, model = chain.complete(messages, timeout=120)
-    return {"draft": response, "model_used": model}
+
+    # Extract TITLE: line from the top of the response
+    lines = response.strip().split("\n")
+    paper_title = topic  # fallback to raw topic if not found
+    draft_lines = lines
+    if lines and lines[0].startswith("TITLE:"):
+        paper_title = lines[0][6:].strip()
+        # Skip the title line and any blank line that follows
+        draft_lines = lines[1:]
+        while draft_lines and not draft_lines[0].strip():
+            draft_lines = draft_lines[1:]
+
+    return {"draft": "\n".join(draft_lines), "title": paper_title, "model_used": model}
 
 
 # ── Agent 5: Editor ───────────────────────────────────────────────────────────
