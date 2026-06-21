@@ -37,16 +37,18 @@ def build_chain() -> list[BaseProvider]:
 
     Full order when both keys are set:
       [0]  gemini-2.5-pro         — best quality, may be rate-limited on free tier
-      [1]  gemini-2.5-flash       — fast, high quality
-      [2]  gemini-2.0-flash
-      [3]  gemini-2.0-flash-lite
-      [4]  gemini-2.5-flash-lite
-      [5]  llama-3.3-70b-versatile
-      [6]  llama-4-scout-17b
-      [7]  qwen3-32b
-      [8]  gpt-oss-120b
-      [9]  llama-3.1-8b-instant
-      [10] gemini-flash-latest    — alias with unpredictable limits, last resort only
+      [1]  gemini-3-flash-preview — Gemini 3, newer generation
+      [2]  gemini-2.5-flash       — fast, high quality
+      [3]  gemini-2.0-flash
+      [4]  gemini-2.0-flash-lite
+      [5]  gemini-2.5-flash-lite
+      [6]  gemini-3.1-flash-lite  — lighter Gemini 3.1, good fallback before Groq
+      [7]  llama-3.3-70b-versatile
+      [8]  llama-4-scout-17b
+      [9]  qwen3-32b
+      [10] gpt-oss-120b
+      [11] llama-3.1-8b-instant
+      [12] gemini-flash-latest    — alias with unpredictable limits, last resort only
     """
     # Start with Groq as the base fallback tier
     providers: list[BaseProvider] = [
@@ -64,10 +66,12 @@ def build_chain() -> list[BaseProvider]:
         # so it goes at the end, after Groq, as a last resort
         for model in reversed([
             "gemini-2.5-pro",
+            "gemini-3-flash-preview",
             "gemini-2.5-flash",
             "gemini-2.0-flash",
             "gemini-2.0-flash-lite",
             "gemini-2.5-flash-lite",
+            "gemini-3.1-flash-lite",
         ]):
             providers.insert(0, GeminiProvider(model))
         providers.append(GeminiProvider("gemini-flash-latest"))
