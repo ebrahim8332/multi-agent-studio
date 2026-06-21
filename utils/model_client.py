@@ -41,12 +41,12 @@ def build_chain() -> list[BaseProvider]:
       [2]  gemini-2.0-flash
       [3]  gemini-2.0-flash-lite
       [4]  gemini-2.5-flash-lite
-      [5]  gemini-flash-latest    — alias, picks up whatever Google promotes
-      [6]  llama-3.3-70b-versatile
-      [7]  llama-4-scout-17b
-      [8]  qwen3-32b
-      [9]  gpt-oss-120b
-      [10] llama-3.1-8b-instant   — last resort
+      [5]  llama-3.3-70b-versatile
+      [6]  llama-4-scout-17b
+      [7]  qwen3-32b
+      [8]  gpt-oss-120b
+      [9]  llama-3.1-8b-instant
+      [10] gemini-flash-latest    — alias with unpredictable limits, last resort only
     """
     # Start with Groq as the base fallback tier
     providers: list[BaseProvider] = [
@@ -57,19 +57,20 @@ def build_chain() -> list[BaseProvider]:
         GroqProvider(TIER5_MODEL),
     ]
 
-    # Insert Gemini models at the front when the key is available
     if os.getenv("GEMINI_API_KEY"):
         from utils.gemini_provider import GeminiProvider
-        # Insert in reverse order so index 0 ends up as the best model
+        # Named Gemini models go at the front — best quality, known output limits
+        # gemini-flash-latest is an alias for an unknown model with unpredictable limits
+        # so it goes at the end, after Groq, as a last resort
         for model in reversed([
             "gemini-2.5-pro",
             "gemini-2.5-flash",
             "gemini-2.0-flash",
             "gemini-2.0-flash-lite",
             "gemini-2.5-flash-lite",
-            "gemini-flash-latest",
         ]):
             providers.insert(0, GeminiProvider(model))
+        providers.append(GeminiProvider("gemini-flash-latest"))
 
     return providers
 
