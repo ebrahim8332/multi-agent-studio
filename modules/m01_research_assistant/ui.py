@@ -88,6 +88,16 @@ def render() -> None:
     )
     st.markdown("---")
 
+    # ── Clear flag — applied before widgets are created ──────────────────────
+    # Clear button sets a flag, caught here before widgets are instantiated.
+    # We pop (delete) the widget keys so they re-initialize to their defaults.
+    # We cannot assign to widget keys — only pop before the widget is created.
+    if st.session_state.pop("m01_clear_requested", False):
+        for key in ["m01_topic_input", "m01_audience_input",
+                    "m01_format_input", "m01_length_input",
+                    "m01_final", "m01_full_state", "m01_agent_outputs"]:
+            st.session_state.pop(key, None)
+
     # ── Input ────────────────────────────────────────────────────────────────
     topic = st.text_area(
         "Research topic",
@@ -131,15 +141,7 @@ def render() -> None:
         run_clicked = st.button("Run Research", type="primary", disabled=not topic.strip())
     with col_clear:
         if st.button("Clear / New topic"):
-            # Explicitly reset each widget to its default value.
-            # Deleting keys is unreliable — Streamlit can restore old values from the browser.
-            st.session_state["m01_topic_input"]    = ""
-            st.session_state["m01_audience_input"] = AUDIENCE_OPTIONS[0]
-            st.session_state["m01_format_input"]   = FORMAT_OPTIONS[0]
-            st.session_state["m01_length_input"]   = LENGTH_OPTIONS[1]
-            # Delete result keys so agent panels reset to Waiting
-            for key in ["m01_final", "m01_full_state", "m01_agent_outputs"]:
-                st.session_state.pop(key, None)
+            st.session_state["m01_clear_requested"] = True
             st.rerun()
 
     st.markdown("---")
