@@ -19,7 +19,7 @@ st.set_page_config(
 # Module registry. Key = sidebar label. Value = import path (None = not built yet).
 MODULES = {
     "🏠 Welcome":                    None,
-    "📝 Research Assistant":          None,
+    "📝 Research Assistant":          "m01_research_assistant",
     "🔍 Competitive Intelligence":    None,
     "📄 Document Interrogator":       None,
     "📅 Meeting Prep":                None,
