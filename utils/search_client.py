@@ -49,11 +49,7 @@ def _search_exa(query: str, max_results: int) -> list[dict]:
     if not api_key:
         raise ValueError("No EXA_API_KEY")
     client = Exa(api_key=api_key)
-    response = client.search_and_contents(
-        query,
-        num_results=max_results,
-        text={"max_characters": 400},
-    )
+    response = client.search(query, num_results=max_results)
     return [
         {
             "title":   r.title or "",
