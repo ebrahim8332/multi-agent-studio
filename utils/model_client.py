@@ -86,7 +86,7 @@ class FallbackChain:
         self.providers = providers
         self.session_state = session_state
 
-    def complete(self, messages: list[dict], timeout: int = 90) -> tuple[str, str]:
+    def complete(self, messages: list[dict], timeout: int = 90, max_tokens: int | None = None) -> tuple[str, str]:
         """Returns (response_text, model_name) from the first provider that succeeds."""
         start_index = self.session_state.get(SESSION_LOCK_KEY) or 0
 
@@ -94,7 +94,7 @@ class FallbackChain:
         for i in range(start_index, len(self.providers)):
             provider = self.providers[i]
             try:
-                response = provider.complete(messages, timeout=timeout)
+                response = provider.complete(messages, timeout=timeout, max_tokens=max_tokens)
                 self.session_state[SESSION_LOCK_KEY] = i
                 return response, provider.model_name
             except FallbackTrigger as e:

@@ -22,9 +22,9 @@ class GroqProvider(BaseProvider):
         self.model_name = model_name
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-    def complete(self, messages: list[dict], timeout: int = 60, temperature: float = 0.3) -> str:
+    def complete(self, messages: list[dict], timeout: int = 60, temperature: float = 0.3, max_tokens: int | None = None) -> str:
         try:
-            return self._call(messages, timeout, temperature)
+            return self._call(messages, timeout, temperature, max_tokens)
 
         except groq_errors.RateLimitError as e:
             raise FallbackTrigger(f"Groq rate limit on {self.model_name}") from e
@@ -42,14 +42,15 @@ class GroqProvider(BaseProvider):
         except groq_errors.APIConnectionError as e:
             # One retry before falling back
             try:
-                return self._call(messages, timeout, temperature)
+                return self._call(messages, timeout, temperature, max_tokens)
             except Exception as retry_error:
                 raise FallbackTrigger(
                     f"Groq connection error on {self.model_name} (failed after retry)"
                 ) from retry_error
 
-    def _call(self, messages: list[dict], timeout: int, temperature: float = 0.3) -> str:
-        max_tokens = int(os.getenv("GROQ_MAX_COMPLETION_TOKENS", "4000"))
+    def _call(self, messages: list[dict], timeout: int, temperature: float = 0.3, max_tokens: int | None = None) -> str:
+        if max_tokens is None:
+            max_tokens = int(os.getenv("GROQ_MAX_COMPLETION_TOKENS", "4000"))
         response = self.client.chat.completions.create(
             model=self.model_name,
             messages=messages,

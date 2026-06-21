@@ -6,7 +6,7 @@ class BaseProvider(ABC):
     model_name: str = ""
 
     @abstractmethod
-    def complete(self, messages: list[dict], timeout: int = 60, temperature: float = 0.3) -> str:
+    def complete(self, messages: list[dict], timeout: int = 60, temperature: float = 0.3, max_tokens: int | None = None) -> str:
         """Send messages to the model and return the response text.
         Raise FallbackTrigger for any error that should cause the chain to try the next model.
         """

@@ -235,7 +235,7 @@ def run_writer(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, timeout=120)
+    response, model = chain.complete(messages, timeout=120, max_tokens=8000)
 
     # Extract TITLE: line from the top of the response
     lines = response.strip().split("\n")
@@ -293,5 +293,5 @@ def run_editor(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, timeout=120)
+    response, model = chain.complete(messages, timeout=120, max_tokens=8000)
     return {"final": response, "model_used": model}

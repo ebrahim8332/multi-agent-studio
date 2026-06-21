@@ -21,9 +21,9 @@ class GeminiProvider(BaseProvider):
         self.model_name = model_name or os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-    def complete(self, messages: list[dict], timeout: int = 60, temperature: float = 0.3) -> str:
+    def complete(self, messages: list[dict], timeout: int = 60, temperature: float = 0.3, max_tokens: int | None = None) -> str:
         try:
-            return self._call(messages, timeout, temperature)
+            return self._call(messages, timeout, temperature, max_tokens)
 
         except gemini_errors.ClientError as e:
             if e.code in (401, 403):
@@ -42,7 +42,7 @@ class GeminiProvider(BaseProvider):
                 f"Gemini unexpected error ({type(e).__name__}) on {self.model_name}: {e}"
             ) from e
 
-    def _call(self, messages: list[dict], timeout: int, temperature: float = 0.3) -> str:
+    def _call(self, messages: list[dict], timeout: int, temperature: float = 0.3, max_tokens: int | None = None) -> str:
         system_text = ""
         gemini_contents = []
 
@@ -60,7 +60,8 @@ class GeminiProvider(BaseProvider):
                     )
                 )
 
-        max_tokens = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "8192"))
+        if max_tokens is None:
+            max_tokens = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "8192"))
         config = types.GenerateContentConfig(
             system_instruction=system_text if system_text else None,
             temperature=temperature,
