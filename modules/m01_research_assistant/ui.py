@@ -82,9 +82,13 @@ def render() -> None:
     st.title("📝 Research Assistant")
     st.caption("Five agents research, critique, write, and edit a structured paper.")
     st.markdown(
-        "> **How this works:** Enter a topic. The Planner breaks it into research questions. "
-        "The Researcher searches the web. The Critic reviews the sources. "
-        "The Writer drafts a full paper. The Editor polishes it."
+        "> **How this works:** You provide a topic. Five specialized AI agents run in sequence, "
+        "each passing its output to the next. This is called an **agent pipeline** — a chain where "
+        "each agent builds on the work of the one before it. The **Planner agent** breaks your topic "
+        "into focused research questions. The **Researcher agent** searches the live web for evidence. "
+        "The **Critic agent** evaluates source quality and flags gaps. The **Writer agent** drafts a "
+        "full structured paper from the evidence. The **Editor agent** polishes the language and "
+        "confirms the format."
     )
     st.markdown("---")
 
