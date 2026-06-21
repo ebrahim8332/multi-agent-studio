@@ -209,12 +209,14 @@ def run_writer(state: dict, chain) -> dict:
             "role": "user",
             "content": (
                 f"Topic: {topic}\n\n"
+                f"Audience: {state.get('audience', 'General business audience')}\n\n"
                 f"Evidence gathered:\n{evidence_text}\n\n"
                 f"Source quality assessment:\n{critique}\n\n"
                 "Write a complete research paper. Structure:\n"
                 "1. Executive Summary (3-5 sentences — what the reader needs to know)\n"
                 "2. Body sections — one section per research question, with a clear heading\n"
                 "3. Conclusions — final synthesis only, no repetition of the body\n\n"
+                "Calibrate vocabulary, assumed knowledge, and level of detail for the stated audience. "
                 "Where evidence is weak, say so plainly. Do not invent facts. "
                 "Write in business formal style. Short sentences."
             ),
@@ -247,6 +249,7 @@ def run_editor(state: dict, chain) -> dict:
         {
             "role": "user",
             "content": (
+                f"Audience: {state.get('audience', 'General business audience')}\n\n"
                 "Edit the following research paper:\n\n"
                 f"{draft}\n\n"
                 "Tasks:\n"
@@ -254,7 +257,8 @@ def run_editor(state: dict, chain) -> dict:
                 "2. Break sentences over 20 words into shorter ones\n"
                 "3. Remove padding, filler phrases, and repetition\n"
                 "4. Ensure the Executive Summary is sharp and standalone\n"
-                "5. Ensure Conclusions add new synthesis, not repetition\n\n"
+                "5. Ensure Conclusions add new synthesis, not repetition\n"
+                "6. Confirm tone and vocabulary are appropriate for the stated audience\n\n"
                 "Return the complete edited paper. Preserve all headings and structure."
             ),
         },

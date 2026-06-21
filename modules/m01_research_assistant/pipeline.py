@@ -33,6 +33,7 @@ from modules.m01_research_assistant.agents import (
 
 class ResearchState(TypedDict):
     topic: str          # user input — set before the pipeline starts
+    audience: str       # selected by user — injected into Writer and Editor prompts
     questions: list     # filled by Planner
     research: dict      # filled by Researcher: {question: [search result dicts]}
     critique: str       # filled by Critic
@@ -97,10 +98,11 @@ def build_graph(chain):
     return graph.compile()
 
 
-def get_initial_state(topic: str) -> ResearchState:
+def get_initial_state(topic: str, audience: str = "General business audience") -> ResearchState:
     """Returns a clean starting state for a new pipeline run."""
     return ResearchState(
         topic=topic,
+        audience=audience,
         questions=[],
         research={},
         critique="",

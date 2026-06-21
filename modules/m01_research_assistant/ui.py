@@ -2,10 +2,10 @@
 Streamlit UI for the Research Assistant module.
 
 UI flow:
-1. User enters a topic and clicks Run.
+1. User enters a topic, selects audience, and clicks Run.
 2. Five agent panels appear — each starts as "Waiting".
 3. As each LangGraph node completes, its panel updates to show output.
-4. When all agents finish, a download button appears.
+4. When all agents finish, a sources section and download button appear.
 
 State is stored in st.session_state under keys prefixed with "m01_".
 This keeps it separate from other modules.
@@ -25,6 +25,14 @@ AGENTS = [
     ("editor",     "Agent 5: Editor",     "Polishes the draft and removes weak language"),
 ]
 
+AUDIENCE_OPTIONS = [
+    "Board / Executive team",
+    "Technical team",
+    "General business audience",
+    "External / Public",
+    "Academic / Research audience",
+]
+
 STATUS_WAITING  = "⬜ Waiting"
 STATUS_RUNNING  = "🔄 Running..."
 STATUS_COMPLETE = "✅ Complete"
@@ -32,15 +40,19 @@ STATUS_FAILED   = "❌ Failed"
 
 
 def _agent_panel(placeholder, label: str, description: str, status: str,
-                 output: str = "", model: str = "", expanded: bool = False) -> None:
+                 output: str = "", model: str = "", expanded: bool = False,
+                 running: bool = False) -> None:
     """Renders a single agent panel into a placeholder."""
     with placeholder.container():
-        # Status line
         col1, col2 = st.columns([3, 1])
         with col1:
             st.markdown(f"**{label}**  \n{description}")
         with col2:
             st.markdown(status)
+
+        # Spinner shown while this specific agent is actively running
+        if running:
+            st.spinner("Working...")
 
         # Output expander — only shown when there is content
         if output:
@@ -63,11 +75,23 @@ def render() -> None:
     st.markdown("---")
 
     # ── Input ────────────────────────────────────────────────────────────────
-    topic = st.text_input(
+    topic = st.text_area(
         "Research topic",
-        placeholder="e.g. Impact of small modular reactors on grid reliability",
-        help="Enter any topic. Be specific — a focused topic produces a better paper.",
+        placeholder=(
+            "e.g. Impact of small modular reactors on grid reliability\n\n"
+            "Add extra context here if you have it. A focused topic produces a better paper."
+        ),
+        help="Enter any topic. Add context if helpful. More specific = better output.",
+        height=120,
         key="m01_topic_input",
+    )
+
+    audience = st.selectbox(
+        "Audience",
+        AUDIENCE_OPTIONS,
+        index=0,
+        help="The paper will be written for this audience.",
+        key="m01_audience_input",
     )
 
     col_btn, col_clear = st.columns([2, 1])
@@ -98,6 +122,7 @@ def render() -> None:
             model  = saved.get(name, {}).get("model", "")
             _agent_panel(placeholders[name], label, description, STATUS_COMPLETE,
                          output=output, model=model, expanded=False)
+        _show_sources()
         _show_download()
         return
 
@@ -111,15 +136,15 @@ def render() -> None:
     # ── Pipeline run ─────────────────────────────────────────────────────────
     chain = get_chain(st.session_state)
     app   = build_graph(chain)
-    state = get_initial_state(topic.strip())
+    state = get_initial_state(topic.strip(), audience)
 
-    agent_outputs = {}  # saves outputs for display after run completes
-    full_state    = dict(state)  # accumulates all state fields across chunks
-    current_index = 0  # tracks which agent is running
+    agent_outputs = {}
+    full_state    = dict(state)
+    current_index = 0
 
-    # Mark the first agent as Running
+    # Mark the first agent as Running with spinner
     first_name, first_label, first_desc = AGENTS[0]
-    _agent_panel(placeholders[first_name], first_label, first_desc, STATUS_RUNNING)
+    _agent_panel(placeholders[first_name], first_label, first_desc, STATUS_RUNNING, running=True)
 
     try:
         for chunk in app.stream(state):
@@ -142,11 +167,12 @@ def render() -> None:
             _agent_panel(placeholders[node_name], label, description, STATUS_COMPLETE,
                          output=output, model=model, expanded=True)
 
-            # Mark the next agent as Running (if there is one)
+            # Mark the next agent as Running with spinner
             current_index += 1
             if current_index < len(AGENTS):
                 next_name, next_label, next_desc = AGENTS[current_index]
-                _agent_panel(placeholders[next_name], next_label, next_desc, STATUS_RUNNING)
+                _agent_panel(placeholders[next_name], next_label, next_desc,
+                             STATUS_RUNNING, running=True)
 
     except Exception as e:
         # Mark any remaining agents as Failed and show the error
@@ -161,6 +187,7 @@ def render() -> None:
     st.session_state["m01_full_state"]    = full_state
     st.session_state["m01_agent_outputs"] = agent_outputs
 
+    _show_sources()
     _show_download()
 
 
@@ -190,6 +217,18 @@ def _format_agent_output(node_name: str, updated: dict, full_state: dict) -> str
         return final  # show the full final paper
 
     return ""
+
+
+def _show_sources() -> None:
+    """Renders a collapsible sources section — collapsed by default."""
+    full_state = st.session_state.get("m01_full_state", {})
+    sources = full_state.get("sources", [])
+    if not sources:
+        return
+    st.markdown("---")
+    with st.expander(f"Sources ({len(sources)} URLs)", expanded=False):
+        for i, url in enumerate(sources, 1):
+            st.markdown(f"{i}. {url}")
 
 
 def _show_download() -> None:
