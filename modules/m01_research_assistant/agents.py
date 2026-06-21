@@ -229,6 +229,9 @@ def run_writer(state: dict, chain) -> dict:
                 "Begin your response with a single line in this exact format:\n"
                 "TITLE: [a short, professional title for this paper — 8 words or fewer]\n\n"
                 "Then write the complete paper following the format instructions above exactly. "
+                "You must write ALL sections from start to finish without stopping early. "
+                "Do not stop mid-section or mid-sentence. "
+                "End only after you have written the Conclusions section. "
                 "Hit the target length. Calibrate vocabulary and detail for the stated audience. "
                 "Where evidence is weak, say so plainly. Do not invent facts."
             ),
@@ -288,7 +291,8 @@ def run_editor(state: dict, chain) -> dict:
                 "4. Confirm the structure matches the stated format exactly\n"
                 "5. Confirm tone and vocabulary suit the stated audience\n"
                 "6. Trim or expand to hit the target length\n\n"
-                "Return the complete edited paper. Preserve all headings and structure."
+                "Return the complete edited paper. Preserve all headings and structure. "
+                "You must return ALL sections from start to finish. Do not stop mid-section."
             ),
         },
     ]
