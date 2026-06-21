@@ -88,6 +88,16 @@ def render() -> None:
     )
     st.markdown("---")
 
+    # ── Form counter — incremented by Clear to force all widgets to reset ────
+    # Streamlit cannot reset a widget's value by clearing its session_state key
+    # once the widget has been rendered. The only reliable way is to change the
+    # widget's key so Streamlit treats it as a brand-new widget with no prior state.
+    # We append a counter to every widget key. Clear increments the counter.
+    # On the next render, all keys are new → all widgets start at their defaults.
+    if "m01_form_key" not in st.session_state:
+        st.session_state["m01_form_key"] = 0
+    fk = st.session_state["m01_form_key"]
+
     # ── Input ────────────────────────────────────────────────────────────────
     topic = st.text_area(
         "Research topic",
@@ -97,7 +107,7 @@ def render() -> None:
         ),
         help="Enter any topic. Add context if helpful. More specific = better output.",
         height=120,
-        key="m01_topic_input",
+        key=f"m01_topic_{fk}",
     )
 
     col_left, col_right = st.columns(2)
@@ -107,7 +117,7 @@ def render() -> None:
             AUDIENCE_OPTIONS,
             index=0,
             help="The paper will be written for this audience.",
-            key="m01_audience_input",
+            key=f"m01_audience_{fk}",
         )
     with col_right:
         format_style = st.selectbox(
@@ -115,7 +125,7 @@ def render() -> None:
             FORMAT_OPTIONS,
             index=0,
             help="The structure and style of the output paper.",
-            key="m01_format_input",
+            key=f"m01_format_{fk}",
         )
 
     length = st.selectbox(
@@ -123,7 +133,7 @@ def render() -> None:
         LENGTH_OPTIONS,
         index=1,
         help="Target length of the final paper.",
-        key="m01_length_input",
+        key=f"m01_length_{fk}",
     )
 
     col_btn, col_clear = st.columns([2, 1])
@@ -131,6 +141,7 @@ def render() -> None:
         run_clicked = st.button("Run Research", type="primary", disabled=not topic.strip())
     with col_clear:
         if st.button("Clear / New topic"):
+            st.session_state["m01_form_key"] += 1
             for key in ["m01_final", "m01_full_state", "m01_agent_outputs"]:
                 st.session_state.pop(key, None)
             st.rerun()
