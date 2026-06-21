@@ -12,6 +12,41 @@ import os
 import re
 from tavily import TavilyClient
 
+# Format-specific structure instructions injected into the Writer prompt.
+FORMAT_INSTRUCTIONS = {
+    "McKinsey / Bain": (
+        "Structure: open with the single most important recommendation. "
+        "Use Situation-Complication-Resolution (SCR) flow throughout. "
+        "Include a numbered list of specific recommendations at the end of each section. "
+        "Use short callout sentences to highlight the key finding in each section. "
+        "No padding. Every sentence must earn its place."
+    ),
+    "Harvard Business Review": (
+        "Structure: open with a compelling real-world example or observation that sets up the problem. "
+        "Weave in brief case examples throughout to ground each argument. "
+        "Use clear section headings. End with practical takeaways the reader can apply immediately. "
+        "Tone is authoritative but accessible — written for a smart general business reader, not specialists."
+    ),
+    "Academic / Research paper": (
+        "Structure: Abstract (150 words), Introduction, Literature Context, Methodology / Research Approach, "
+        "Findings, Discussion, Conclusions, References. "
+        "Use formal academic tone. Cite sources inline where evidence is referenced. "
+        "Acknowledge limitations of the research. Avoid prescriptive recommendations — present findings neutrally."
+    ),
+    "Government / Policy brief": (
+        "Structure: Issue Statement, Background, Current Policy Landscape, Key Findings, "
+        "Policy Options (at least two), Recommended Option with rationale, Implementation Considerations. "
+        "Tone is neutral and formal. Each section should stand alone if extracted. "
+        "Flag uncertainty clearly. No advocacy language."
+    ),
+    "Consulting one-pager": (
+        "Structure: one tight Executive Summary paragraph, then three to five bullet-point sections "
+        "each with a bold heading and two to four bullets. End with a 'So What / Next Steps' section. "
+        "Maximum compression — every word must carry weight. No full paragraphs in the body. "
+        "A senior executive should be able to read the whole thing in under three minutes."
+    ),
+}
+
 # Writing style rules injected into every prompt that produces text.
 # These enforce Alnoor's anti-AI writing style across all agent outputs.
 STYLE_RULES = """
@@ -176,10 +211,15 @@ def run_writer(state: dict, chain) -> dict:
     Writes a structured research paper from the gathered evidence.
     Returns: draft (str), model_used (str)
     """
-    topic = state["topic"]
-    questions = state["questions"]
-    research = state["research"]
-    critique = state["critique"]
+    topic        = state["topic"]
+    questions    = state["questions"]
+    research     = state["research"]
+    critique     = state["critique"]
+    audience     = state.get("audience", "General business audience")
+    format_style = state.get("format_style", "McKinsey / Bain")
+    length       = state.get("length", "Standard paper (~2,000 words, 4-5 pages)")
+
+    format_instructions = FORMAT_INSTRUCTIONS.get(format_style, FORMAT_INSTRUCTIONS["McKinsey / Bain"])
 
     # Build a structured evidence block for the LLM
     evidence_blocks = []
@@ -209,16 +249,15 @@ def run_writer(state: dict, chain) -> dict:
             "role": "user",
             "content": (
                 f"Topic: {topic}\n\n"
-                f"Audience: {state.get('audience', 'General business audience')}\n\n"
+                f"Audience: {audience}\n"
+                f"Format: {format_style}\n"
+                f"Target length: {length}\n\n"
+                f"Format instructions:\n{format_instructions}\n\n"
                 f"Evidence gathered:\n{evidence_text}\n\n"
                 f"Source quality assessment:\n{critique}\n\n"
-                "Write a complete research paper. Structure:\n"
-                "1. Executive Summary (3-5 sentences — what the reader needs to know)\n"
-                "2. Body sections — one section per research question, with a clear heading\n"
-                "3. Conclusions — final synthesis only, no repetition of the body\n\n"
-                "Calibrate vocabulary, assumed knowledge, and level of detail for the stated audience. "
-                "Where evidence is weak, say so plainly. Do not invent facts. "
-                "Write in business formal style. Short sentences."
+                "Write a complete paper following the format instructions above exactly. "
+                "Hit the target length. Calibrate vocabulary and detail for the stated audience. "
+                "Where evidence is weak, say so plainly. Do not invent facts."
             ),
         },
     ]
@@ -235,30 +274,35 @@ def run_editor(state: dict, chain) -> dict:
     tightens structure, removes padding.
     Returns: final (str), model_used (str)
     """
-    draft = state["draft"]
+    draft        = state["draft"]
+    audience     = state.get("audience", "General business audience")
+    format_style = state.get("format_style", "McKinsey / Bain")
+    length       = state.get("length", "Standard paper (~2,000 words, 4-5 pages)")
 
     messages = [
         {
             "role": "system",
             "content": (
-                "You are a senior editor. Your job is to polish research papers "
-                "for executive audiences. You do not change substance — only language quality. "
+                "You are a senior editor. Your job is to polish research papers. "
+                "You do not change substance — only language quality and structure compliance. "
                 f"{STYLE_RULES}"
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Audience: {state.get('audience', 'General business audience')}\n\n"
-                "Edit the following research paper:\n\n"
+                f"Audience: {audience}\n"
+                f"Format: {format_style}\n"
+                f"Target length: {length}\n\n"
+                "Edit the following paper:\n\n"
                 f"{draft}\n\n"
                 "Tasks:\n"
                 "1. Remove any banned words (replace with direct alternatives)\n"
                 "2. Break sentences over 20 words into shorter ones\n"
                 "3. Remove padding, filler phrases, and repetition\n"
-                "4. Ensure the Executive Summary is sharp and standalone\n"
-                "5. Ensure Conclusions add new synthesis, not repetition\n"
-                "6. Confirm tone and vocabulary are appropriate for the stated audience\n\n"
+                "4. Confirm the structure matches the stated format exactly\n"
+                "5. Confirm tone and vocabulary suit the stated audience\n"
+                "6. Trim or expand to hit the target length\n\n"
                 "Return the complete edited paper. Preserve all headings and structure."
             ),
         },

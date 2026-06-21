@@ -33,6 +33,20 @@ AUDIENCE_OPTIONS = [
     "Academic / Research audience",
 ]
 
+FORMAT_OPTIONS = [
+    "McKinsey / Bain",
+    "Harvard Business Review",
+    "Academic / Research paper",
+    "Government / Policy brief",
+    "Consulting one-pager",
+]
+
+LENGTH_OPTIONS = [
+    "Short brief (~800 words, 1-2 pages)",
+    "Standard paper (~2,000 words, 4-5 pages)",
+    "Full report (~4,500 words, 9-11 pages)",
+]
+
 STATUS_WAITING  = "⬜ Waiting"
 STATUS_RUNNING  = "🔄 Running..."
 STATUS_COMPLETE = "✅ Complete"
@@ -86,12 +100,30 @@ def render() -> None:
         key="m01_topic_input",
     )
 
-    audience = st.selectbox(
-        "Audience",
-        AUDIENCE_OPTIONS,
-        index=0,
-        help="The paper will be written for this audience.",
-        key="m01_audience_input",
+    col_left, col_right = st.columns(2)
+    with col_left:
+        audience = st.selectbox(
+            "Audience",
+            AUDIENCE_OPTIONS,
+            index=0,
+            help="The paper will be written for this audience.",
+            key="m01_audience_input",
+        )
+    with col_right:
+        format_style = st.selectbox(
+            "Format",
+            FORMAT_OPTIONS,
+            index=0,
+            help="The structure and style of the output paper.",
+            key="m01_format_input",
+        )
+
+    length = st.selectbox(
+        "Length",
+        LENGTH_OPTIONS,
+        index=1,
+        help="Target length of the final paper.",
+        key="m01_length_input",
     )
 
     col_btn, col_clear = st.columns([2, 1])
@@ -136,7 +168,7 @@ def render() -> None:
     # ── Pipeline run ─────────────────────────────────────────────────────────
     chain = get_chain(st.session_state)
     app   = build_graph(chain)
-    state = get_initial_state(topic.strip(), audience)
+    state = get_initial_state(topic.strip(), audience, format_style, length)
 
     agent_outputs = {}
     full_state    = dict(state)
