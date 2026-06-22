@@ -139,15 +139,19 @@ def run_critic(state: dict, chain) -> dict:
     questions = state["questions"]
     research = state["research"]
 
-    # Build a compact summary of what was found — avoids sending full content to the LLM
+    # Build a summary including titles and content snippets for each source
     research_summary = []
     for q in questions:
         hits = research.get(q, [])
         if hits:
-            titles = [h.get("title", "Untitled") for h in hits]
-            research_summary.append(f"Question: {q}\nSources found: {', '.join(titles)}")
+            source_lines = []
+            for h in hits:
+                title   = h.get("title", "Untitled")
+                content = h.get("content", "")[:300]
+                source_lines.append(f"  - {title}: {content}")
+            research_summary.append(f"Question: {q}\n" + "\n".join(source_lines))
         else:
-            research_summary.append(f"Question: {q}\nSources found: None")
+            research_summary.append(f"Question: {q}\n  - No sources found")
 
     summary_text = "\n\n".join(research_summary)
 
