@@ -124,7 +124,7 @@ def run_researcher(state: dict) -> dict:
     """
     questions = state["questions"]
     search = get_search_chain()
-    research, sources = search.search_multi(questions, max_results=3)
+    research, sources = search.search_multi(questions, max_results=5)
     return {"research": research, "sources": sources}
 
 
@@ -139,7 +139,7 @@ def run_critic(state: dict, chain) -> dict:
     questions = state["questions"]
     research = state["research"]
 
-    # Build a summary including titles and content snippets for each source
+    # Build a summary including titles, domain, and content snippets for each source
     research_summary = []
     for q in questions:
         hits = research.get(q, [])
@@ -147,8 +147,16 @@ def run_critic(state: dict, chain) -> dict:
             source_lines = []
             for h in hits:
                 title   = h.get("title", "Untitled")
+                url     = h.get("url", "")
                 content = h.get("content", "")[:300]
-                source_lines.append(f"  - {title}: {content}")
+                # Extract domain for credibility signal (e.g. reuters.com, .gov, .edu)
+                try:
+                    from urllib.parse import urlparse
+                    domain = urlparse(url).netloc.replace("www.", "")
+                except Exception:
+                    domain = ""
+                domain_str = f" [{domain}]" if domain else ""
+                source_lines.append(f"  - {title}{domain_str}: {content}")
             research_summary.append(f"Question: {q}\n" + "\n".join(source_lines))
         else:
             research_summary.append(f"Question: {q}\n  - No sources found")
@@ -237,7 +245,9 @@ def run_writer(state: dict, chain) -> dict:
                 "Do not stop mid-section or mid-sentence. "
                 "End only after you have written the Conclusions section. "
                 "Hit the target length. Calibrate vocabulary and detail for the stated audience. "
-                "Where evidence is weak, say so plainly. Do not invent facts."
+                "Where the Critic rated a source as Weak, treat it as background context only — do not build a key argument on it. "
+                "Where a research question had no sources found, name that gap explicitly in the paper rather than skipping it. "
+                "Where evidence is weak or absent, say so plainly. Do not invent facts."
             ),
         },
     ]
@@ -267,6 +277,7 @@ def run_editor(state: dict, chain) -> dict:
     Returns: final (str), model_used (str)
     """
     draft        = state["draft"]
+    critique     = state.get("critique", "")
     audience     = state.get("audience", "General business audience")
     format_style = state.get("format_style", "McKinsey / Bain")
     length       = state.get("length", "Standard paper (~2,000 words, 4-5 pages)")
@@ -286,6 +297,7 @@ def run_editor(state: dict, chain) -> dict:
                 f"Audience: {audience}\n"
                 f"Format: {format_style}\n"
                 f"Target length: {length}\n\n"
+                f"Source quality assessment from the Critic:\n{critique}\n\n"
                 "Edit the following paper:\n\n"
                 f"{draft}\n\n"
                 "Tasks:\n"
@@ -294,7 +306,9 @@ def run_editor(state: dict, chain) -> dict:
                 "3. Remove padding, filler phrases, and repetition\n"
                 "4. Confirm the structure matches the stated format exactly\n"
                 "5. Confirm tone and vocabulary suit the stated audience\n"
-                "6. Trim or expand to hit the target length\n\n"
+                "6. Trim or expand to hit the target length\n"
+                "7. If any claim uses language stronger than the evidence supports, soften it — "
+                "cross-reference the Critic's ratings to identify these\n\n"
                 "Return the complete edited paper. Preserve all headings and structure. "
                 "You must return ALL sections from start to finish. Do not stop mid-section."
             ),
