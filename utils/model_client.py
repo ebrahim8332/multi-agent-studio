@@ -22,7 +22,7 @@ import os
 from utils.base import BaseProvider, FallbackTrigger, AllProvidersExhausted
 from utils.groq_provider import (
     GroqProvider,
-    TIER1_MODEL, TIER2_MODEL, TIER3_MODEL, TIER4_MODEL, TIER5_MODEL,
+    TIER1_MODEL, TIER2_MODEL, TIER3_MODEL, TIER4_MODEL, TIER5_MODEL, TIER6_MODEL,
 )
 
 SESSION_LOCK_KEY = "locked_provider_index"
@@ -47,8 +47,9 @@ def build_chain() -> list[BaseProvider]:
       [8]  llama-4-scout-17b      — strong, multimodal, 84% MMLU
       [9]  qwen3-32b              — competitive coding and reasoning, 85.7% MMLU
       [10] gpt-oss-120b           — large reasoning model, benchmarks not fully published
-      [11] llama-3.1-8b-instant   — smallest model, last Groq resort
-      [12] gemini-flash-latest    — unresolved alias, unpredictable limits, last resort only
+      [11] llama-3.1-8b-instant   — smallest model, fast, high RPD
+      [12] gpt-oss-20b            — smaller/faster sibling to 120B, last Groq resort
+      [13] gemini-flash-latest    — unresolved alias, unpredictable limits, last resort only
     """
     # Start with Groq as the base fallback tier
     providers: list[BaseProvider] = [
@@ -57,6 +58,7 @@ def build_chain() -> list[BaseProvider]:
         GroqProvider(TIER3_MODEL),
         GroqProvider(TIER4_MODEL),
         GroqProvider(TIER5_MODEL),
+        GroqProvider(TIER6_MODEL),
     ]
 
     if os.getenv("GEMINI_API_KEY"):

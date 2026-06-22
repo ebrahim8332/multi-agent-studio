@@ -9,7 +9,8 @@ TIER1_MODEL = "llama-3.3-70b-versatile"                   # 12K TPM, 100K TPD �
 TIER2_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # 30K TPM, 500K TPD — Llama 4
 TIER3_MODEL = "qwen/qwen3-32b"                             # 6K TPM,  500K TPD — strong instruction following
 TIER4_MODEL = "openai/gpt-oss-120b"                        # 8K TPM,  200K TPD — large model
-TIER5_MODEL = "llama-3.1-8b-instant"                       # 6K TPM,  500K TPD — last resort
+TIER5_MODEL = "llama-3.1-8b-instant"                       # 6K TPM,  500K TPD — fast, high RPD
+TIER6_MODEL = "openai/gpt-oss-20b"                         # smaller/faster sibling to 120B — last resort
 
 
 class GroqProvider(BaseProvider):
