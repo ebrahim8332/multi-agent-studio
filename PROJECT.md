@@ -27,7 +27,7 @@
 ### Phase 1: Platform Shell
 - [x] Full folder structure created
 - [x] requirements.txt
-- [x] utils/model_client.py built and tested (gemini-2.5-flash responded, 11 providers)
+- [x] utils/model_client.py built and tested (gemini-2.5-flash responded, 14 providers)
 - [x] app.py with sidebar routing and Coming Soon placeholders
 - [x] Deployed to Streamlit Cloud: https://multi-agent-studio.streamlit.app
 - [x] GitHub repo created: ebrahim8332/multi-agent-studio
@@ -73,6 +73,12 @@
 ---
 
 ## Session Notes
+
+### Session 4 — 2026-06-22
+- Model chain updated to 14-provider reference order per Multi-Agent Studio Model Chain Reference doc
+- Added gemini-3-flash-preview (pos 1), gemini-3.1-flash-lite (pos 2), openai/gpt-oss-20b (last Groq slot)
+- gemini-flash-latest remains last — unstable alias, appended after all Groq models
+- utils/groq_provider.py and utils/model_client.py updated; pushed to GitHub via feedback repo
 
 ### Session 3 — 2026-06-22
 - Search fallback chain built: Tavily → Exa → Serper (utils/search_client.py). All three tested and confirmed working.
