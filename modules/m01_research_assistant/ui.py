@@ -43,7 +43,7 @@ FORMAT_OPTIONS = [
 
 LENGTH_OPTIONS = [
     "Short brief (~800 words, 1-2 pages)",
-    "Standard paper (~2,000 words, 4-5 pages)",
+    "Standard length (~2,000 words, 4-5 pages)",
     "Full report (~4,500 words, 9-11 pages)",
 ]
 
@@ -114,6 +114,13 @@ def render() -> None:
         key=f"m01_topic_{fk}",
     )
 
+    angle = st.text_input(
+        "Specific angle or focus (optional)",
+        placeholder="e.g. regulatory risk, investor perspective, implementation challenges",
+        help="Narrows the Planner's questions. Leave blank for a broad overview.",
+        key=f"m01_angle_{fk}",
+    )
+
     col_left, col_right = st.columns(2)
     with col_left:
         audience = st.selectbox(
@@ -181,7 +188,7 @@ def render() -> None:
     # ── Pipeline run ─────────────────────────────────────────────────────────
     chain = get_chain(st.session_state)
     app   = build_graph(chain)
-    state = get_initial_state(topic.strip(), audience, format_style, length)
+    state = get_initial_state(topic.strip(), audience, format_style, length, angle.strip())
 
     agent_outputs = {}
     full_state    = dict(state)

@@ -33,6 +33,7 @@ from modules.m01_research_assistant.agents import (
 
 class ResearchState(TypedDict):
     topic: str          # user input — set before the pipeline starts
+    angle: str          # optional focus area — narrows Planner questions
     audience: str       # selected by user — injected into Writer and Editor prompts
     format_style: str   # selected by user — controls paper structure (McKinsey, HBR, etc.)
     length: str         # selected by user — target word count and page count
@@ -105,11 +106,13 @@ def get_initial_state(
     topic: str,
     audience: str = "General business audience",
     format_style: str = "McKinsey / Bain",
-    length: str = "Standard paper (~2,000 words, 4-5 pages)",
+    length: str = "Standard length (~2,000 words, 4-5 pages)",
+    angle: str = "",
 ) -> ResearchState:
     """Returns a clean starting state for a new pipeline run."""
     return ResearchState(
         topic=topic,
+        angle=angle,
         audience=audience,
         format_style=format_style,
         length=length,

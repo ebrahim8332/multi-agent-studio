@@ -63,12 +63,34 @@ Writing rules — follow exactly:
 
 # ── Agent 1: Planner ──────────────────────────────────────────────────────────
 
+def _question_count(length: str) -> tuple[int, int]:
+    """Returns (min_questions, max_questions) based on the selected length."""
+    if "Short" in length:
+        return 2, 3
+    elif "Full" in length:
+        return 5, 6
+    else:
+        return 4, 5
+
+
 def run_planner(state: dict, chain) -> dict:
     """
-    Breaks the topic into 4-6 focused research questions.
+    Breaks the topic into focused research questions.
+    Question count scales to the selected length.
+    Audience and angle both shape the questions.
     Returns: questions (list), model_used (str)
     """
-    topic = state["topic"]
+    topic    = state["topic"]
+    audience = state.get("audience", "General business audience")
+    angle    = state.get("angle", "")
+    length   = state.get("length", "Standard length (~2,000 words, 4-5 pages)")
+
+    q_min, q_max = _question_count(length)
+
+    angle_instruction = (
+        f"Focus the questions specifically on this angle: {angle}\n"
+        if angle else ""
+    )
 
     messages = [
         {
@@ -82,8 +104,11 @@ def run_planner(state: dict, chain) -> dict:
         {
             "role": "user",
             "content": (
-                f"Topic: {topic}\n\n"
-                "Generate 4 to 6 focused research questions that together cover this topic completely. "
+                f"Topic: {topic}\n"
+                f"Audience: {audience}\n"
+                f"{angle_instruction}"
+                f"\nGenerate {q_min} to {q_max} focused research questions that together cover this topic. "
+                f"Frame each question for a {audience} — use vocabulary and concerns that matter to that audience. "
                 "Each question should be specific enough to search for directly. "
                 "Number each question (1. 2. 3. etc). One question per line. Nothing else."
             ),
@@ -116,15 +141,28 @@ def run_planner(state: dict, chain) -> dict:
 
 # ── Agent 2: Researcher ───────────────────────────────────────────────────────
 
+def _search_depth(length: str) -> int:
+    """Returns max_results per question based on selected length."""
+    if "Short" in length:
+        return 3
+    elif "Full" in length:
+        return 7
+    else:
+        return 5
+
+
 def run_researcher(state: dict) -> dict:
     """
     Searches the web for each research question using the search fallback chain.
     Tries Tavily first, then Exa, then Serper. Never crashes the pipeline.
+    Search depth scales to the selected length.
     Returns: research (dict), sources (list)
     """
-    questions = state["questions"]
+    questions  = state["questions"]
+    length     = state.get("length", "Standard length (~2,000 words, 4-5 pages)")
+    max_results = _search_depth(length)
     search = get_search_chain()
-    research, sources = search.search_multi(questions, max_results=5)
+    research, sources = search.search_multi(questions, max_results=max_results)
     return {"research": research, "sources": sources}
 
 
