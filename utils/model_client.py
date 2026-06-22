@@ -37,18 +37,18 @@ def build_chain() -> list[BaseProvider]:
 
     Full order when both keys are set:
       [0]  gemini-2.5-pro         — best quality, may be rate-limited on free tier
-      [1]  gemini-3-flash-preview — Gemini 3, newer generation
-      [2]  gemini-2.5-flash       — fast, high quality
-      [3]  gemini-2.0-flash
-      [4]  gemini-2.0-flash-lite
-      [5]  gemini-2.5-flash-lite
-      [6]  gemini-3.1-flash-lite  — lighter Gemini 3.1, good fallback before Groq
-      [7]  llama-3.3-70b-versatile
-      [8]  llama-4-scout-17b
-      [9]  qwen3-32b
-      [10] gpt-oss-120b
-      [11] llama-3.1-8b-instant
-      [12] gemini-flash-latest    — alias with unpredictable limits, last resort only
+      [1]  gemini-3-flash-preview — GA, matches 2.5 Pro quality, 80K output, fastest Gemini
+      [2]  gemini-3.1-flash-lite  — outperforms 2.5 Flash on benchmarks, 381 t/s
+      [3]  gemini-2.5-flash       — strong hybrid reasoning, 65K output
+      [4]  gemini-2.5-flash-lite  — lighter 2.5, still better than 2.0 generation
+      [5]  gemini-2.0-flash       — deprecated June 2026, 8K output cap
+      [6]  gemini-2.0-flash-lite  — deprecated June 2026, 8K output cap
+      [7]  llama-3.3-70b-versatile — best Groq all-rounder, 86% MMLU
+      [8]  llama-4-scout-17b      — strong, multimodal, 84% MMLU
+      [9]  qwen3-32b              — competitive coding and reasoning, 85.7% MMLU
+      [10] gpt-oss-120b           — large reasoning model, benchmarks not fully published
+      [11] llama-3.1-8b-instant   — smallest model, last Groq resort
+      [12] gemini-flash-latest    — unresolved alias, unpredictable limits, last resort only
     """
     # Start with Groq as the base fallback tier
     providers: list[BaseProvider] = [
@@ -67,11 +67,11 @@ def build_chain() -> list[BaseProvider]:
         for model in reversed([
             "gemini-2.5-pro",
             "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite",
             "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
             "gemini-2.0-flash",
             "gemini-2.0-flash-lite",
-            "gemini-2.5-flash-lite",
-            "gemini-3.1-flash-lite",
         ]):
             providers.insert(0, GeminiProvider(model))
         providers.append(GeminiProvider("gemini-flash-latest"))
