@@ -220,71 +220,79 @@ def flag_irrelevant_questions(research: dict, chain, skip: list = None) -> list[
     """
     LLM-based relevance check. Runs after flag_weak_questions() as a second pass.
 
+    ONE LLM call for all questions (not one per question — that was too slow).
+    Each question is labelled Q1, Q2, etc. The model answers YES or NO per question.
+    A question is flagged if its answer is NO.
+
     Only checks questions not already flagged by the domain check (pass skip= to exclude them).
-    For each remaining question, sends one LLM call with the question + its result snippets.
-    Prompt asks for a YES/NO per source — YES means the content directly addresses the question.
-    Flags the question if fewer than half the results answer YES.
+    If the LLM call fails for any reason, returns an empty list — no questions penalised.
 
     Returns a list of question strings (same format as flag_weak_questions).
     """
     skip_set = set(skip or [])
-    flagged = []
 
-    for question, hits in research.items():
-        if question in skip_set:
-            continue
-        if not hits:
-            continue  # already caught by flag_weak_questions
+    # Build the list of questions to check (skip already-flagged ones)
+    to_check = [
+        (q, hits) for q, hits in research.items()
+        if q not in skip_set and hits
+    ]
 
+    if not to_check:
+        return []
+
+    # Build one block per question: question text + its source snippets
+    question_blocks = []
+    question_index  = {}   # maps "Q1", "Q2", ... → question string
+    for i, (question, hits) in enumerate(to_check, 1):
+        label = f"Q{i}"
+        question_index[label] = question
         snippets = []
-        for i, h in enumerate(hits, 1):
+        for j, h in enumerate(hits, 1):
             title   = h.get("title", "")
-            content = h.get("content", "")[:250]
-            snippets.append(f"Source {i}: {title} — {content}")
+            content = h.get("content", "")[:200]
+            snippets.append(f"  Source {j}: {title} — {content}")
+        block = f"{label}: {question}\n" + "\n".join(snippets)
+        question_blocks.append(block)
 
-        snippet_text = "\n".join(snippets)
+    all_blocks = "\n\n".join(question_blocks)
+    labels     = ", ".join(question_index.keys())
 
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a research quality checker. "
-                    "You will be given a research question and a list of sources. "
-                    "For each source, answer YES if the content directly addresses the question "
-                    "or NO if it does not. "
-                    "Respond with exactly one line per source in this format:\n"
-                    "Source 1: YES\n"
-                    "Source 2: NO\n"
-                    "No other text."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Question: {question}\n\n"
-                    f"Sources:\n{snippet_text}\n\n"
-                    "For each source, answer YES or NO."
-                ),
-            },
-        ]
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a research quality checker. "
+                "You will be given a list of research questions, each with their search results. "
+                "For each question, answer YES if the majority of sources directly address it, "
+                "NO if they do not. "
+                f"Respond with exactly one line per question using only these labels: {labels}. "
+                "Format: Q1: YES\nQ2: NO\nNo other text."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Questions and sources:\n\n{all_blocks}\n\n"
+                f"For each question ({labels}), answer YES or NO."
+            ),
+        },
+    ]
 
-        try:
-            response, _ = chain.complete(messages)
-        except Exception:
-            continue  # if this check fails, do not penalise the question
+    try:
+        response, _ = chain.complete(messages)
+    except Exception:
+        return []  # if the check fails entirely, do not penalise any question
 
-        yes_count = 0
-        no_count  = 0
-        for line in response.strip().split("\n"):
-            line_upper = line.upper()
-            if "YES" in line_upper:
-                yes_count += 1
-            elif "NO" in line_upper:
-                no_count += 1
-
-        total = yes_count + no_count
-        if total > 0 and yes_count < total / 2:
-            flagged.append(question)
+    # Parse "Q1: YES", "Q2: NO", etc.
+    flagged = []
+    for line in response.strip().split("\n"):
+        line = line.strip()
+        for label, question in question_index.items():
+            if line.upper().startswith(label + ":"):
+                answer = line[len(label) + 1:].strip().upper()
+                if answer.startswith("NO"):
+                    flagged.append(question)
+                break
 
     return flagged
 
