@@ -9,11 +9,12 @@ Phase-based state machine (stored in st.session_state["m01_phase"]):
   writing       — runs Critic → Writer → Editor (entered from quality_gate approval)
   complete      — all agents done, download available
 
-Researcher retry logic (no LLM involved):
-  After the Researcher runs, flag_weak_questions() checks each question objectively:
-  zero results OR all results from low-authority domains (social media, video, forums).
-  If more than 2 questions are flagged, re-search only those questions (up to 2 retries).
-  If still more than 2 flagged after retries, pause at quality_gate for user decision.
+Researcher quality gate — two-pass check:
+  Pass 1 (objective): flag_weak_questions() — zero results or all low-authority domains.
+  Pass 2 (LLM):      flag_irrelevant_questions() — binary YES/NO per source for questions
+                     that passed Pass 1. Flags if fewer than half the results answer YES.
+  Combined flagged list drives the retry loop (>2 = retry, max 2 retries).
+  If still >2 after retries, pause at quality_gate for user decision.
 
 All session state keys are prefixed with "m01_" to stay isolated from other modules.
 """
@@ -22,7 +23,7 @@ import streamlit as st
 from utils.model_client import get_chain
 from modules.m01_research_assistant.agents import (
     run_planner, run_researcher, run_critic, run_writer, run_editor,
-    flag_weak_questions,
+    flag_weak_questions, flag_irrelevant_questions,
 )
 from modules.m01_research_assistant.pipeline import get_initial_state
 from utils.doc_builder import build_research_doc
@@ -345,7 +346,7 @@ def render() -> None:
         )
 
         # ── Step 2: Quality check and retry loop ──────────────────────────────
-        flagged = flag_weak_questions(full_state["research"])
+        flagged = _combined_flag_check(full_state, chain, researcher_ph, researcher_out, researcher_model)
         researcher_attempt = 1
 
         while len(flagged) > 2 and researcher_attempt <= MAX_RESEARCHER_RETRIES:
@@ -369,7 +370,8 @@ def render() -> None:
                 STATUS_COMPLETE, output=researcher_out,
                 model=f"{researcher_model} · {researcher_attempt} attempts", expanded=True,
             )
-            flagged = flag_weak_questions(full_state["research"])
+            flagged = _combined_flag_check(full_state, chain, researcher_ph, researcher_out,
+                                           f"{researcher_model} · {researcher_attempt} attempts")
 
         # ── Step 3: Quality gate if still weak after retries ──────────────────
         if len(flagged) > 2:
@@ -495,6 +497,46 @@ def render() -> None:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _combined_flag_check(full_state: dict, chain, researcher_ph, researcher_out: str,
+                         researcher_model_label: str) -> list[str]:
+    """
+    Two-pass quality check on research results.
+
+    Pass 1 — objective domain check (flag_weak_questions):
+      Flags questions with zero results or all results from low-authority domains.
+      Fast, free, no LLM involved.
+
+    Pass 2 — LLM relevance check (flag_irrelevant_questions):
+      Only runs on questions that passed Pass 1.
+      Flags questions where fewer than half the results directly address the question.
+      Shows a brief status note in the Researcher panel while running.
+
+    Returns the combined list of flagged question strings.
+    """
+    research = full_state.get("research", {})
+
+    # Pass 1: objective
+    domain_flagged = flag_weak_questions(research)
+
+    # Pass 2: LLM relevance (skip questions already caught by Pass 1)
+    _agent_panel(
+        researcher_ph, "Agent 2: Researcher",
+        "Checking content relevance...",
+        STATUS_COMPLETE, output=researcher_out, model=researcher_model_label,
+    )
+    llm_flagged = flag_irrelevant_questions(research, chain, skip=domain_flagged)
+
+    # Restore the clean complete panel after the status note
+    _agent_panel(
+        researcher_ph, "Agent 2: Researcher",
+        "Searches the web for evidence on each question",
+        STATUS_COMPLETE, output=researcher_out, model=researcher_model_label, expanded=True,
+    )
+
+    combined = domain_flagged + [q for q in llm_flagged if q not in domain_flagged]
+    return combined
+
 
 def _start_planner(topic, angle, audience, format_style, length, planner_ph) -> None:
     """Runs the Planner and stores results. Ends with st.rerun() into planner_done."""

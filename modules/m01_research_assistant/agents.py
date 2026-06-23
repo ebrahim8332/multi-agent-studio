@@ -216,6 +216,79 @@ def flag_weak_questions(research: dict) -> list[str]:
     return flagged
 
 
+def flag_irrelevant_questions(research: dict, chain, skip: list = None) -> list[str]:
+    """
+    LLM-based relevance check. Runs after flag_weak_questions() as a second pass.
+
+    Only checks questions not already flagged by the domain check (pass skip= to exclude them).
+    For each remaining question, sends one LLM call with the question + its result snippets.
+    Prompt asks for a YES/NO per source — YES means the content directly addresses the question.
+    Flags the question if fewer than half the results answer YES.
+
+    Returns a list of question strings (same format as flag_weak_questions).
+    """
+    skip_set = set(skip or [])
+    flagged = []
+
+    for question, hits in research.items():
+        if question in skip_set:
+            continue
+        if not hits:
+            continue  # already caught by flag_weak_questions
+
+        snippets = []
+        for i, h in enumerate(hits, 1):
+            title   = h.get("title", "")
+            content = h.get("content", "")[:250]
+            snippets.append(f"Source {i}: {title} — {content}")
+
+        snippet_text = "\n".join(snippets)
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a research quality checker. "
+                    "You will be given a research question and a list of sources. "
+                    "For each source, answer YES if the content directly addresses the question "
+                    "or NO if it does not. "
+                    "Respond with exactly one line per source in this format:\n"
+                    "Source 1: YES\n"
+                    "Source 2: NO\n"
+                    "No other text."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Question: {question}\n\n"
+                    f"Sources:\n{snippet_text}\n\n"
+                    "For each source, answer YES or NO."
+                ),
+            },
+        ]
+
+        try:
+            response, _ = chain.complete(messages)
+        except Exception:
+            continue  # if this check fails, do not penalise the question
+
+        yes_count = 0
+        no_count  = 0
+        for line in response.strip().split("\n"):
+            line_upper = line.upper()
+            if "YES" in line_upper:
+                yes_count += 1
+            elif "NO" in line_upper:
+                no_count += 1
+
+        total = yes_count + no_count
+        if total > 0 and yes_count < total / 2:
+            flagged.append(question)
+
+    return flagged
+
+
 def run_researcher(state: dict, target_questions: list = None) -> dict:
     """
     Searches the web for research questions using the search fallback chain.
