@@ -11,6 +11,14 @@ LangGraph merges it back into the full state before passing to the next node.
 import re
 from utils.search_client import get_search_chain
 
+# Domains that are never useful as research sources.
+# Used by flag_weak_questions() to detect low-quality results objectively.
+LOW_AUTHORITY_DOMAINS = {
+    "youtube.com", "youtu.be", "linkedin.com", "facebook.com",
+    "twitter.com", "x.com", "instagram.com", "tiktok.com",
+    "reddit.com", "quora.com", "pinterest.com", "medium.com",
+}
+
 # Format-specific structure instructions injected into the Writer prompt.
 FORMAT_INSTRUCTIONS = {
     "White Paper / Analytical": (
@@ -178,19 +186,63 @@ def _search_depth(length: str) -> int:
         return 5
 
 
-def run_researcher(state: dict) -> dict:
+def flag_weak_questions(research: dict) -> list[str]:
     """
-    Searches the web for each research question using the search fallback chain.
+    Returns a list of questions that need re-searching.
+
+    A question is flagged if:
+    - It returned zero results, OR
+    - All of its results are from low-authority domains (social media, video, forums)
+
+    No LLM involved — pure domain and count logic. This is used as the gate
+    signal for the Researcher retry loop, not the Critic's subjective ratings.
+    """
+    from urllib.parse import urlparse
+    flagged = []
+    for question, hits in research.items():
+        if not hits:
+            flagged.append(question)
+            continue
+        domains = []
+        for h in hits:
+            try:
+                domain = urlparse(h.get("url", "")).netloc.replace("www.", "")
+            except Exception:
+                domain = ""
+            if domain:
+                domains.append(domain)
+        if domains and all(d in LOW_AUTHORITY_DOMAINS for d in domains):
+            flagged.append(question)
+    return flagged
+
+
+def run_researcher(state: dict, target_questions: list = None) -> dict:
+    """
+    Searches the web for research questions using the search fallback chain.
     Tries Tavily first, then Exa, then Serper. Never crashes the pipeline.
     Search depth scales to the selected length.
+
+    target_questions: if provided, only re-searches those specific questions
+    and merges the new results back into the existing research dict.
+    Used by the retry loop to fix weak questions without losing good results.
+
     Returns: research (dict), sources (list)
     """
-    questions  = state["questions"]
-    length     = state.get("length", "Standard length (~2,000 words, 4-5 pages)")
+    questions   = target_questions if target_questions is not None else state["questions"]
+    length      = state.get("length", "Standard length (~2,000 words, 4-5 pages)")
     max_results = _search_depth(length)
-    search = get_search_chain()
-    research, sources = search.search_multi(questions, max_results=max_results)
-    return {"research": research, "sources": sources}
+    search      = get_search_chain()
+    new_research, new_sources = search.search_multi(questions, max_results=max_results)
+
+    if target_questions is not None:
+        # Merge into existing research — only targeted questions are updated
+        merged = dict(state.get("research", {}))
+        merged.update(new_research)
+        existing_sources = list(state.get("sources", []))
+        merged_sources   = existing_sources + [s for s in new_sources if s not in existing_sources]
+        return {"research": merged, "sources": merged_sources}
+
+    return {"research": new_research, "sources": new_sources}
 
 
 # ── Agent 3: Critic ───────────────────────────────────────────────────────────

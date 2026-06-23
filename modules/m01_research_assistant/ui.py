@@ -1,33 +1,33 @@
 """
 Streamlit UI for the Research Assistant module.
 
-UI flow:
-1. User enters a topic, selects audience/format/length, and clicks Run.
-2. Planner runs and its panel updates to Complete.
-3. Approval checkpoint: user reviews the research questions and either:
-   a. Approves — downstream agents run (Researcher → Critic → Writer → Editor)
-   b. Edits and replans — Planner runs again with the user's edits as context.
-      Attempt counter increments. Loop continues until user approves.
-4. After approval, the remaining four agents run in sequence.
-5. Download button appears when all agents complete.
-
 Phase-based state machine (stored in st.session_state["m01_phase"]):
   idle          — form shown, nothing run yet
   planner_done  — Planner complete, approval UI visible, downstream blocked
-  running       — approved, downstream pipeline executing
+  running       — approved; runs Researcher + retry loop inline
+  quality_gate  — retry cap reached, still weak sources; user decides to proceed or stop
+  writing       — runs Critic → Writer → Editor (entered from quality_gate approval)
   complete      — all agents done, download available
+
+Researcher retry logic (no LLM involved):
+  After the Researcher runs, flag_weak_questions() checks each question objectively:
+  zero results OR all results from low-authority domains (social media, video, forums).
+  If more than 2 questions are flagged, re-search only those questions (up to 2 retries).
+  If still more than 2 flagged after retries, pause at quality_gate for user decision.
 
 All session state keys are prefixed with "m01_" to stay isolated from other modules.
 """
 
 import streamlit as st
 from utils.model_client import get_chain
-from modules.m01_research_assistant.agents import run_planner
-from modules.m01_research_assistant.pipeline import build_downstream_graph, get_initial_state
+from modules.m01_research_assistant.agents import (
+    run_planner, run_researcher, run_critic, run_writer, run_editor,
+    flag_weak_questions,
+)
+from modules.m01_research_assistant.pipeline import get_initial_state
 from utils.doc_builder import build_research_doc
 
 
-# Agent display config: (internal_name, display_label, description)
 AGENTS = [
     ("planner",    "Agent 1: Planner",    "Breaks the topic into focused research questions"),
     ("researcher", "Agent 2: Researcher", "Searches the web for evidence on each question"),
@@ -36,8 +36,10 @@ AGENTS = [
     ("editor",     "Agent 5: Editor",     "Polishes the draft and removes weak language"),
 ]
 
-# Downstream agents only — used after the Planner approval checkpoint
-DOWNSTREAM_AGENTS = AGENTS[1:]
+DOWNSTREAM_AGENTS = AGENTS[1:]   # researcher through editor
+WRITING_AGENTS    = AGENTS[2:]   # critic, writer, editor — used in writing phase
+
+MAX_RESEARCHER_RETRIES = 2   # max re-search attempts after the initial run
 
 AUDIENCE_OPTIONS = [
     "General business audience",
@@ -76,11 +78,11 @@ STATUS_RUNNING  = "🔄 Running..."
 STATUS_COMPLETE = "✅ Complete"
 STATUS_FAILED   = "❌ Failed"
 
-# Keys to clear on reset
 _STATE_KEYS = [
     "m01_final", "m01_full_state", "m01_agent_outputs",
     "m01_pending_state", "m01_planner_attempt", "m01_editing",
     "m01_planner_model", "m01_inputs", "m01_phase",
+    "m01_flagged_questions", "m01_researcher_attempt",
 ]
 
 
@@ -94,16 +96,13 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
             st.markdown(f"**{label}**  \n{description}")
         with col2:
             st.markdown(status)
-
         if running:
             st.spinner("Working...")
-
         if output:
             with st.expander("View output", expanded=expanded):
                 st.markdown(output)
                 if model:
                     st.caption(f"Model: {model}")
-
         st.divider()
 
 
@@ -121,24 +120,20 @@ def render() -> None:
     )
     st.markdown("---")
 
-    # ── Form key — incremented by Clear to force all widgets to reset ─────────
     if "m01_form_key" not in st.session_state:
         st.session_state["m01_form_key"] = 0
     fk = st.session_state["m01_form_key"]
 
-    phase = st.session_state.get("m01_phase", "idle")
+    phase  = st.session_state.get("m01_phase", "idle")
+    locked = phase in ("running", "writing")
 
     # ── Input form ────────────────────────────────────────────────────────────
-    # Lock form while the downstream pipeline is actively running
-    locked = (phase == "running")
-
     topic = st.text_area(
         "Research topic",
         placeholder=(
             "e.g. Impact of small modular reactors on grid reliability\n\n"
             "Add extra context here if you have it. A focused topic produces a better paper."
         ),
-        help="Enter any topic. Add context if helpful. More specific = better output.",
         height=120,
         key=f"m01_topic_{fk}",
         disabled=locked,
@@ -147,7 +142,6 @@ def render() -> None:
     angle = st.text_input(
         "Specific angle or focus (optional)",
         placeholder="e.g. regulatory risk, investor perspective, implementation challenges",
-        help="Narrows the Planner's questions. Leave blank for a broad overview.",
         key=f"m01_angle_{fk}",
         disabled=locked,
     )
@@ -155,38 +149,25 @@ def render() -> None:
     col_left, col_right = st.columns(2)
     with col_left:
         audience = st.selectbox(
-            "Audience",
-            AUDIENCE_OPTIONS,
-            index=0,
-            help="The paper will be written for this audience.",
-            key=f"m01_audience_{fk}",
-            disabled=locked,
+            "Audience", AUDIENCE_OPTIONS, index=0,
+            key=f"m01_audience_{fk}", disabled=locked,
         )
     with col_right:
         format_style = st.selectbox(
-            "Format",
-            FORMAT_OPTIONS,
-            index=0,
-            help="The structure and style of the output paper.",
-            key=f"m01_format_{fk}",
-            disabled=locked,
+            "Format", FORMAT_OPTIONS, index=0,
+            key=f"m01_format_{fk}", disabled=locked,
         )
         st.caption(FORMAT_HINTS.get(format_style, ""))
 
     length = st.selectbox(
-        "Length",
-        LENGTH_OPTIONS,
-        index=1,
-        help="Target length of the final paper.",
-        key=f"m01_length_{fk}",
-        disabled=locked,
+        "Length", LENGTH_OPTIONS, index=1,
+        key=f"m01_length_{fk}", disabled=locked,
     )
 
     col_btn, col_clear = st.columns([2, 1])
     with col_btn:
         run_clicked = st.button(
-            "Run Research",
-            type="primary",
+            "Run Research", type="primary",
             disabled=not topic.strip() or locked,
         )
     with col_clear:
@@ -202,23 +183,33 @@ def render() -> None:
     st.markdown("⚠️ *AI-generated output. Review before use.*")
     st.markdown("---")
 
-    # ── Agent panel placeholders ───────────────────────────────────────────────
-    # The approval checkpoint placeholder sits between Planner and Researcher.
-    # It is shown only in the planner_done phase and cleared otherwise.
-    planner_ph   = st.empty()
-    approval_ph  = st.empty()
-    downstream_ph = {name: st.empty() for name, _, _ in DOWNSTREAM_AGENTS}
+    # ── Placeholders ─────────────────────────────────────────────────────────
+    # Layout order:
+    #   planner panel
+    #   approval_ph     ← Planner approval checkpoint
+    #   researcher panel
+    #   quality_gate_ph ← Researcher quality gate (shown only when needed)
+    #   critic panel
+    #   writer panel
+    #   editor panel
+    planner_ph      = st.empty()
+    approval_ph     = st.empty()
+    researcher_ph   = st.empty()
+    quality_gate_ph = st.empty()
+    writing_ph      = {name: st.empty() for name, _, _ in WRITING_AGENTS}
 
-    all_ph = {"planner": planner_ph, **downstream_ph}
+    all_ph = {
+        "planner":    planner_ph,
+        "researcher": researcher_ph,
+        **writing_ph,
+    }
 
-    # ── If Run is clicked, always start fresh from the Planner ────────────────
+    # ── Run clicked — always start fresh ─────────────────────────────────────
     if run_clicked and topic.strip():
         for key in _STATE_KEYS:
             st.session_state.pop(key, None)
         _start_planner(topic, angle, audience, format_style, length, planner_ph)
-        # _start_planner ends with st.rerun() — nothing below executes
 
-    # Re-read phase after potential clear (run_clicked path already returned)
     phase = st.session_state.get("m01_phase", "idle")
 
     # ── PHASE: idle ───────────────────────────────────────────────────────────
@@ -229,13 +220,12 @@ def render() -> None:
 
     # ── PHASE: planner_done ───────────────────────────────────────────────────
     if phase == "planner_done":
-        pending  = st.session_state.get("m01_pending_state", {})
+        pending   = st.session_state.get("m01_pending_state", {})
         questions = pending.get("questions", [])
-        p_model  = st.session_state.get("m01_planner_model", "")
-        attempt  = st.session_state.get("m01_planner_attempt", 1)
-        editing  = st.session_state.get("m01_editing", False)
+        p_model   = st.session_state.get("m01_planner_model", "")
+        attempt   = st.session_state.get("m01_planner_attempt", 1)
+        editing   = st.session_state.get("m01_editing", False)
 
-        # Show Planner panel as Complete with questions expanded so user can read them
         attempt_note = f" · attempt {attempt}" if attempt > 1 else ""
         planner_out  = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
         _agent_panel(
@@ -245,7 +235,6 @@ def render() -> None:
             model=p_model + attempt_note, expanded=True,
         )
 
-        # Approval checkpoint
         with approval_ph.container():
             if not editing:
                 st.info(
@@ -263,7 +252,6 @@ def render() -> None:
                         st.rerun()
                 st.caption("The Researcher will not start until you approve.")
             else:
-                # Edit mode — free text box, one question per line
                 st.markdown("**Edit the questions below.** One per line.")
                 st.caption(
                     "Reword, delete, add, or redirect questions. "
@@ -280,7 +268,7 @@ def render() -> None:
                 col1, col2 = st.columns([1, 1])
                 with col1:
                     if st.button("Replan with my edits →", type="primary"):
-                        user_edits = st.session_state.get("m01_edit_area", "\n".join(questions))
+                        user_edits  = st.session_state.get("m01_edit_area", "\n".join(questions))
                         new_attempt = attempt + 1
                         st.session_state["m01_planner_attempt"] = new_attempt
                         st.session_state["m01_editing"] = False
@@ -289,14 +277,14 @@ def render() -> None:
                         state  = get_initial_state(
                             inputs.get("topic", ""),
                             inputs.get("audience", "General business audience"),
-                            inputs.get("format_style", "McKinsey / Bain"),
+                            inputs.get("format_style", "White Paper / Analytical"),
                             inputs.get("length", "Standard length (~2,000 words, 4-5 pages)"),
                             inputs.get("angle", ""),
                         )
                         result = run_planner(state, chain, user_edits=user_edits)
                         pending.update(result)
                         st.session_state["m01_pending_state"] = pending
-                        st.session_state["m01_planner_model"]  = result.get("model_used", "")
+                        st.session_state["m01_planner_model"] = result.get("model_used", "")
                         st.session_state["m01_phase"] = "planner_done"
                         st.rerun()
                 with col2:
@@ -304,161 +292,319 @@ def render() -> None:
                         st.session_state["m01_editing"] = False
                         st.rerun()
 
-        # Downstream agents shown as Waiting while approval is pending
         for name, label, desc in DOWNSTREAM_AGENTS:
-            _agent_panel(downstream_ph[name], label, desc, STATUS_WAITING)
+            _agent_panel(all_ph[name], label, desc, STATUS_WAITING)
         return
 
     # ── PHASE: running ────────────────────────────────────────────────────────
     if phase == "running":
-        pending  = st.session_state.get("m01_pending_state", {})
-        questions = pending.get("questions", [])
-        p_model  = st.session_state.get("m01_planner_model", "")
-        attempt  = st.session_state.get("m01_planner_attempt", 1)
+        pending       = st.session_state.get("m01_pending_state", {})
+        questions     = pending.get("questions", [])
+        p_model       = st.session_state.get("m01_planner_model", "")
+        planner_attempt = st.session_state.get("m01_planner_attempt", 1)
 
-        # Planner panel locked as Complete
-        attempt_note = f" · attempt {attempt}" if attempt > 1 else ""
+        attempt_note = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
         planner_out  = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
         _agent_panel(
             planner_ph, "Agent 1: Planner",
             "Breaks the topic into focused research questions",
             STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note,
         )
-
-        # Clear the approval area — pipeline is now running
         approval_ph.empty()
 
-        # Initialize downstream panels as Waiting
         for name, label, desc in DOWNSTREAM_AGENTS:
-            _agent_panel(downstream_ph[name], label, desc, STATUS_WAITING)
+            _agent_panel(all_ph[name], label, desc, STATUS_WAITING)
 
-        # Mark first downstream agent as Running
-        first_name, first_label, first_desc = DOWNSTREAM_AGENTS[0]
-        _agent_panel(downstream_ph[first_name], first_label, first_desc,
-                     STATUS_RUNNING, running=True)
-
-        chain         = get_chain(st.session_state)
-        app           = build_downstream_graph(chain)
         full_state    = dict(pending)
         agent_outputs = {"planner": {"output": planner_out, "model": p_model}}
-        current_index = 0
+        chain         = get_chain(st.session_state)
 
+        # ── Step 1: Researcher (first pass) ───────────────────────────────────
+        _agent_panel(
+            researcher_ph, "Agent 2: Researcher",
+            "Searching the web for evidence on each question",
+            STATUS_RUNNING, running=True,
+        )
         try:
-            for chunk in app.stream(full_state):
-                node_name = list(chunk.keys())[0]
-                updated   = chunk[node_name]
-                full_state.update(updated)
-
-                agent_cfg = next((a for a in DOWNSTREAM_AGENTS if a[0] == node_name), None)
-                if not agent_cfg:
-                    continue
-                _, label, desc = agent_cfg
-
-                output = _format_agent_output(node_name, updated, full_state)
-                model  = updated.get("model_used", "")
-                agent_outputs[node_name] = {"output": output, "model": model}
-
-                _agent_panel(downstream_ph[node_name], label, desc,
-                             STATUS_COMPLETE, output=output, model=model, expanded=True)
-
-                current_index += 1
-                if current_index < len(DOWNSTREAM_AGENTS):
-                    next_name, next_label, next_desc = DOWNSTREAM_AGENTS[current_index]
-                    _agent_panel(downstream_ph[next_name], next_label, next_desc,
-                                 STATUS_RUNNING, running=True)
-
+            result = run_researcher(full_state)
+            full_state.update(result)
         except Exception as e:
-            for i in range(current_index, len(DOWNSTREAM_AGENTS)):
-                name, label, desc = DOWNSTREAM_AGENTS[i]
-                _agent_panel(downstream_ph[name], label, desc, STATUS_FAILED)
-            st.error(f"Pipeline stopped: {e}")
+            _agent_panel(researcher_ph, "Agent 2: Researcher", "", STATUS_FAILED)
+            for name, label, desc in WRITING_AGENTS:
+                _agent_panel(writing_ph[name], label, desc, STATUS_FAILED)
+            st.error(f"Researcher failed: {e}")
             return
 
-        # Save results and transition to complete
-        st.session_state["m01_final"]         = full_state.get("final", "")
-        st.session_state["m01_full_state"]    = full_state
-        st.session_state["m01_agent_outputs"] = agent_outputs
-        st.session_state["m01_phase"]         = "complete"
+        researcher_out = _format_researcher_output(full_state)
+        researcher_model = full_state.get("model_used", "")
+        agent_outputs["researcher"] = {"output": researcher_out, "model": researcher_model}
+        _agent_panel(
+            researcher_ph, "Agent 2: Researcher",
+            "Searches the web for evidence on each question",
+            STATUS_COMPLETE, output=researcher_out, model=researcher_model, expanded=True,
+        )
 
-        _show_sources()
-        _show_download()
+        # ── Step 2: Quality check and retry loop ──────────────────────────────
+        flagged = flag_weak_questions(full_state["research"])
+        researcher_attempt = 1
+
+        while len(flagged) > 2 and researcher_attempt <= MAX_RESEARCHER_RETRIES:
+            researcher_attempt += 1
+            _agent_panel(
+                researcher_ph, "Agent 2: Researcher",
+                f"Re-searching {len(flagged)} weak question(s) — attempt {researcher_attempt} of {MAX_RESEARCHER_RETRIES + 1}",
+                STATUS_RUNNING, running=True,
+            )
+            try:
+                result = run_researcher(full_state, target_questions=flagged)
+                full_state.update(result)
+            except Exception as e:
+                break  # if retry fails, proceed with what we have
+
+            researcher_out = _format_researcher_output(full_state)
+            agent_outputs["researcher"] = {"output": researcher_out, "model": researcher_model}
+            _agent_panel(
+                researcher_ph, "Agent 2: Researcher",
+                "Searches the web for evidence on each question",
+                STATUS_COMPLETE, output=researcher_out,
+                model=f"{researcher_model} · {researcher_attempt} attempts", expanded=True,
+            )
+            flagged = flag_weak_questions(full_state["research"])
+
+        # ── Step 3: Quality gate if still weak after retries ──────────────────
+        if len(flagged) > 2:
+            st.session_state["m01_pending_state"]    = full_state
+            st.session_state["m01_flagged_questions"] = flagged
+            st.session_state["m01_agent_outputs"]    = agent_outputs
+            st.session_state["m01_researcher_attempt"] = researcher_attempt
+            st.session_state["m01_phase"] = "quality_gate"
+            st.rerun()
+            return
+
+        # ── Step 4: Run Critic → Writer → Editor ──────────────────────────────
+        _run_writing_agents(
+            full_state, agent_outputs, chain,
+            planner_ph, researcher_ph, quality_gate_ph, writing_ph,
+            planner_out, p_model, attempt_note, researcher_out, researcher_model,
+        )
         return
 
-    # ── PHASE: complete — restore saved results on re-render ─────────────────
+    # ── PHASE: quality_gate ───────────────────────────────────────────────────
+    if phase == "quality_gate":
+        pending           = st.session_state.get("m01_pending_state", {})
+        flagged           = st.session_state.get("m01_flagged_questions", [])
+        questions         = pending.get("questions", [])
+        p_model           = st.session_state.get("m01_planner_model", "")
+        planner_attempt   = st.session_state.get("m01_planner_attempt", 1)
+        agent_outputs     = st.session_state.get("m01_agent_outputs", {})
+        r_attempt         = st.session_state.get("m01_researcher_attempt", 1)
+
+        attempt_note = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
+        planner_out  = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        _agent_panel(
+            planner_ph, "Agent 1: Planner",
+            "Breaks the topic into focused research questions",
+            STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note,
+        )
+        approval_ph.empty()
+
+        researcher_out   = agent_outputs.get("researcher", {}).get("output", "")
+        researcher_model = agent_outputs.get("researcher", {}).get("model", "")
+        _agent_panel(
+            researcher_ph, "Agent 2: Researcher",
+            f"Completed {r_attempt + 1} search attempt(s)",
+            STATUS_COMPLETE, output=researcher_out,
+            model=f"{researcher_model} · {r_attempt + 1} attempts",
+        )
+
+        with quality_gate_ph.container():
+            st.warning(
+                f"After {r_attempt + 1} search attempts, **{len(flagged)} question(s)** still have "
+                "weak or no sources. The Writer will note these gaps explicitly in the paper."
+            )
+            st.markdown("**Questions with weak sources:**")
+            for q in flagged:
+                st.markdown(f"- {q[:100]}")
+            st.markdown("")
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                if st.button("Proceed to Writer →", type="primary"):
+                    st.session_state["m01_phase"] = "writing"
+                    st.rerun()
+            with col2:
+                if st.button("Stop here"):
+                    for key in _STATE_KEYS:
+                        st.session_state.pop(key, None)
+                    st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
+                    st.rerun()
+
+        for name, label, desc in WRITING_AGENTS:
+            _agent_panel(writing_ph[name], label, desc, STATUS_WAITING)
+        return
+
+    # ── PHASE: writing ────────────────────────────────────────────────────────
+    if phase == "writing":
+        pending           = st.session_state.get("m01_pending_state", {})
+        questions         = pending.get("questions", [])
+        p_model           = st.session_state.get("m01_planner_model", "")
+        planner_attempt   = st.session_state.get("m01_planner_attempt", 1)
+        agent_outputs     = st.session_state.get("m01_agent_outputs", {})
+        r_attempt         = st.session_state.get("m01_researcher_attempt", 1)
+
+        attempt_note     = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
+        planner_out      = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        researcher_out   = agent_outputs.get("researcher", {}).get("output", "")
+        researcher_model = agent_outputs.get("researcher", {}).get("model", "")
+        full_state       = dict(pending)
+        chain            = get_chain(st.session_state)
+
+        _agent_panel(
+            planner_ph, "Agent 1: Planner",
+            "Breaks the topic into focused research questions",
+            STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note,
+        )
+        approval_ph.empty()
+        _agent_panel(
+            researcher_ph, "Agent 2: Researcher",
+            f"Completed {r_attempt + 1} search attempt(s)",
+            STATUS_COMPLETE, output=researcher_out,
+            model=f"{researcher_model} · {r_attempt + 1} attempts",
+        )
+        quality_gate_ph.empty()
+
+        for name, label, desc in WRITING_AGENTS:
+            _agent_panel(writing_ph[name], label, desc, STATUS_WAITING)
+
+        _run_writing_agents(
+            full_state, agent_outputs, chain,
+            planner_ph, researcher_ph, quality_gate_ph, writing_ph,
+            planner_out, p_model, attempt_note, researcher_out, researcher_model,
+        )
+        return
+
+    # ── PHASE: complete ───────────────────────────────────────────────────────
     if phase == "complete":
         saved = st.session_state.get("m01_agent_outputs", {})
         for name, label, desc in AGENTS:
             out   = saved.get(name, {}).get("output", "")
             model = saved.get(name, {}).get("model", "")
-            _agent_panel(all_ph[name], label, desc, STATUS_COMPLETE,
-                         output=out, model=model)
+            _agent_panel(all_ph[name], label, desc, STATUS_COMPLETE, output=out, model=model)
         _show_sources()
         _show_download()
         return
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def _start_planner(topic, angle, audience, format_style, length, planner_ph) -> None:
-    """
-    Runs the Planner agent for the first time and stores results in session_state.
-    Called when Run is clicked. Ends with st.rerun() to enter the planner_done phase.
-    """
+    """Runs the Planner and stores results. Ends with st.rerun() into planner_done."""
     _, label, desc = AGENTS[0]
     _agent_panel(planner_ph, label, desc, STATUS_RUNNING, running=True)
 
     chain = get_chain(st.session_state)
     state = get_initial_state(topic, audience, format_style, length, angle)
-
     result = run_planner(state, chain)
 
-    # Store the user's inputs so replan calls can reconstruct state
     st.session_state["m01_inputs"] = {
         "topic": topic, "angle": angle, "audience": audience,
         "format_style": format_style, "length": length,
     }
-
-    # pending_state carries all fields through the approval checkpoint into the downstream graph
     pending = dict(state)
     pending.update(result)
 
-    st.session_state["m01_pending_state"]    = pending
-    st.session_state["m01_planner_model"]    = result.get("model_used", "")
-    st.session_state["m01_planner_attempt"]  = 1
-    st.session_state["m01_editing"]          = False
-    st.session_state["m01_agent_outputs"]    = {}
-    st.session_state["m01_phase"]            = "planner_done"
-
+    st.session_state["m01_pending_state"]   = pending
+    st.session_state["m01_planner_model"]   = result.get("model_used", "")
+    st.session_state["m01_planner_attempt"] = 1
+    st.session_state["m01_editing"]         = False
+    st.session_state["m01_agent_outputs"]   = {}
+    st.session_state["m01_phase"]           = "planner_done"
     st.rerun()
+
+
+def _run_writing_agents(
+    full_state, agent_outputs, chain,
+    planner_ph, researcher_ph, quality_gate_ph, writing_ph,
+    planner_out, p_model, attempt_note, researcher_out, researcher_model,
+) -> None:
+    """
+    Runs Critic → Writer → Editor in sequence, updating panels after each.
+    Called from both the running phase (direct path) and writing phase (after quality gate).
+    Saves results and sets phase to complete when done.
+    """
+    quality_gate_ph.empty()
+
+    _agent_panel(
+        writing_ph["critic"], "Agent 3: Critic",
+        "Assesses source quality and flags gaps",
+        STATUS_RUNNING, running=True,
+    )
+
+    agents_to_run = [
+        ("critic",  lambda: run_critic(full_state, chain),  "Agent 3: Critic",  "Assesses source quality and flags gaps"),
+        ("writer",  lambda: run_writer(full_state, chain),  "Agent 4: Writer",  "Drafts the full research paper"),
+        ("editor",  lambda: run_editor(full_state, chain),  "Agent 5: Editor",  "Polishes the draft and removes weak language"),
+    ]
+
+    current_index = 0
+    try:
+        for agent_name, agent_fn, label, desc in agents_to_run:
+            result = agent_fn()
+            full_state.update(result)
+
+            output = _format_agent_output(agent_name, result, full_state)
+            model  = result.get("model_used", "")
+            agent_outputs[agent_name] = {"output": output, "model": model}
+
+            _agent_panel(writing_ph[agent_name], label, desc,
+                         STATUS_COMPLETE, output=output, model=model, expanded=True)
+
+            current_index += 1
+            if current_index < len(agents_to_run):
+                next_name, _, next_label, next_desc = agents_to_run[current_index]
+                _agent_panel(writing_ph[next_name], next_label, next_desc,
+                             STATUS_RUNNING, running=True)
+
+    except Exception as e:
+        for i in range(current_index, len(agents_to_run)):
+            fail_name, _, fail_label, fail_desc = agents_to_run[i]
+            _agent_panel(writing_ph[fail_name], fail_label, fail_desc, STATUS_FAILED)
+        st.error(f"Pipeline stopped: {e}")
+        return
+
+    st.session_state["m01_final"]         = full_state.get("final", "")
+    st.session_state["m01_full_state"]    = full_state
+    st.session_state["m01_agent_outputs"] = agent_outputs
+    st.session_state["m01_phase"]         = "complete"
+
+    _show_sources()
+    _show_download()
+
+
+def _format_researcher_output(full_state: dict) -> str:
+    """Builds the Researcher panel summary text."""
+    research = full_state.get("research", {})
+    sources  = full_state.get("sources", [])
+    lines = [f"**{len(sources)} sources collected across {len(research)} questions**\n"]
+    for q, hits in research.items():
+        lines.append(f"- *{q[:70]}...* — {len(hits)} results")
+    return "\n".join(lines)
 
 
 def _format_agent_output(node_name: str, updated: dict, full_state: dict) -> str:
     """Returns a readable summary of what each agent produced."""
-    if node_name == "planner":
-        questions = updated.get("questions", [])
-        return "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-
-    elif node_name == "researcher":
-        research = updated.get("research", {})
-        sources  = updated.get("sources", [])
-        lines = [f"**{len(sources)} sources collected across {len(research)} questions**\n"]
-        for q, hits in research.items():
-            lines.append(f"- *{q[:70]}...* — {len(hits)} results")
-        return "\n".join(lines)
-
+    if node_name == "researcher":
+        return _format_researcher_output(full_state)
     elif node_name == "critic":
         return updated.get("critique", "")
-
     elif node_name == "writer":
         draft = updated.get("draft", "")
         return f"*Draft: {len(draft):,} characters*\n\n" + draft[:600] + "..."
-
     elif node_name == "editor":
         return updated.get("final", "")
-
     return ""
 
 
 def _show_sources() -> None:
-    """Renders a collapsible sources section — collapsed by default."""
     full_state = st.session_state.get("m01_full_state", {})
     sources    = full_state.get("sources", [])
     if not sources:
@@ -470,7 +616,6 @@ def _show_sources() -> None:
 
 
 def _show_download() -> None:
-    """Renders the download section after a successful run."""
     full_state = st.session_state.get("m01_full_state", {})
     topic      = full_state.get("topic", "research")
     model      = full_state.get("model_used", "unknown")
