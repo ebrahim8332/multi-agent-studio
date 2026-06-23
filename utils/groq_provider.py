@@ -23,7 +23,8 @@ class GroqProvider(BaseProvider):
         self.model_name = model_name
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-    def complete(self, messages: list[dict], timeout: int = 60, temperature: float = 0.3, max_tokens: int | None = None) -> str:
+    def complete(self, messages: list[dict], timeout: int = 60, temperature: float = 0.3,
+                 max_tokens: int | None = None) -> tuple[str, int, int]:
         try:
             return self._call(messages, timeout, temperature, max_tokens)
 
@@ -49,7 +50,8 @@ class GroqProvider(BaseProvider):
                     f"Groq connection error on {self.model_name} (failed after retry)"
                 ) from retry_error
 
-    def _call(self, messages: list[dict], timeout: int, temperature: float = 0.3, max_tokens: int | None = None) -> str:
+    def _call(self, messages: list[dict], timeout: int, temperature: float = 0.3,
+              max_tokens: int | None = None) -> tuple[str, int, int]:
         if max_tokens is None:
             max_tokens = int(os.getenv("GROQ_MAX_COMPLETION_TOKENS", "4000"))
         response = self.client.chat.completions.create(
@@ -59,4 +61,10 @@ class GroqProvider(BaseProvider):
             temperature=temperature,
             timeout=timeout,
         )
-        return response.choices[0].message.content
+
+        # Extract token counts from usage
+        usage = getattr(response, "usage", None)
+        input_tokens  = getattr(usage, "prompt_tokens",     0) or 0
+        output_tokens = getattr(usage, "completion_tokens", 0) or 0
+
+        return response.choices[0].message.content, input_tokens, output_tokens

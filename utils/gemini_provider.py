@@ -21,7 +21,8 @@ class GeminiProvider(BaseProvider):
         self.model_name = model_name or os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-    def complete(self, messages: list[dict], timeout: int = 60, temperature: float = 0.3, max_tokens: int | None = None) -> str:
+    def complete(self, messages: list[dict], timeout: int = 60, temperature: float = 0.3,
+                 max_tokens: int | None = None) -> tuple[str, int, int]:
         try:
             return self._call(messages, timeout, temperature, max_tokens)
 
@@ -42,7 +43,8 @@ class GeminiProvider(BaseProvider):
                 f"Gemini unexpected error ({type(e).__name__}) on {self.model_name}: {e}"
             ) from e
 
-    def _call(self, messages: list[dict], timeout: int, temperature: float = 0.3, max_tokens: int | None = None) -> str:
+    def _call(self, messages: list[dict], timeout: int, temperature: float = 0.3,
+              max_tokens: int | None = None) -> tuple[str, int, int]:
         system_text = ""
         gemini_contents = []
 
@@ -73,4 +75,10 @@ class GeminiProvider(BaseProvider):
             contents=gemini_contents,
             config=config,
         )
-        return response.text
+
+        # Extract token counts from usage metadata
+        usage = getattr(response, "usage_metadata", None)
+        input_tokens  = getattr(usage, "prompt_token_count",     0) or 0
+        output_tokens = getattr(usage, "candidates_token_count", 0) or 0
+
+        return response.text, input_tokens, output_tokens

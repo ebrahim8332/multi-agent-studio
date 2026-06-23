@@ -15,6 +15,11 @@ messages format (same for all providers):
         {"role": "system", "content": "You are ..."},
         {"role": "user",   "content": "Do this ..."},
     ]
+
+Token tracking:
+    Every successful LLM call appends to st.session_state["m01_call_log"].
+    Each entry: {"model": str, "input_tokens": int, "output_tokens": int}
+    chain.usage_summary returns totals and estimated cost.
 """
 
 import os
@@ -26,6 +31,26 @@ from utils.groq_provider import (
 )
 
 SESSION_LOCK_KEY = "locked_provider_index"
+CALL_LOG_KEY     = "m01_call_log"
+
+# Approximate pricing in USD per 1M tokens (input, output). As of June 2026.
+# These are estimates — actual billing may differ.
+APPROX_PRICING = {
+    "gemini-2.5-pro":                            (1.25,  10.00),
+    "gemini-3-flash-preview":                    (0.075,  0.30),
+    "gemini-3.1-flash-lite":                     (0.075,  0.30),
+    "gemini-2.5-flash":                          (0.075,  0.30),
+    "gemini-2.5-flash-lite":                     (0.075,  0.30),
+    "gemini-2.0-flash":                          (0.10,   0.40),
+    "gemini-2.0-flash-lite":                     (0.075,  0.30),
+    "gemini-flash-latest":                       (0.075,  0.30),
+    "llama-3.3-70b-versatile":                   (0.59,   0.79),
+    "meta-llama/llama-4-scout-17b-16e-instruct": (0.11,   0.34),
+    "qwen/qwen3-32b":                            (0.29,   0.59),
+    "openai/gpt-oss-120b":                       (0.90,   0.90),
+    "llama-3.1-8b-instant":                      (0.05,   0.08),
+    "openai/gpt-oss-20b":                        (0.30,   0.60),
+}
 
 
 def build_chain() -> list[BaseProvider]:
@@ -87,23 +112,40 @@ class FallbackChain:
 
     session_state is a dict-like object (st.session_state in Streamlit,
     a plain dict in tests). This keeps the chain independent of Streamlit.
+
+    Token usage is accumulated into session_state[CALL_LOG_KEY] on every
+    successful call. Use chain.usage_summary to read totals.
     """
 
     def __init__(self, providers: list[BaseProvider], session_state: dict):
         self.providers = providers
         self.session_state = session_state
 
-    def complete(self, messages: list[dict], timeout: int = 90, max_tokens: int | None = None) -> tuple[str, str]:
-        """Returns (response_text, model_name) from the first provider that succeeds."""
+    def complete(self, messages: list[dict], timeout: int = 90,
+                 max_tokens: int | None = None) -> tuple[str, str]:
+        """Returns (response_text, model_name) from the first provider that succeeds.
+        Also accumulates token counts into session_state for the run summary."""
         start_index = self.session_state.get(SESSION_LOCK_KEY) or 0
 
         errors = []
         for i in range(start_index, len(self.providers)):
             provider = self.providers[i]
             try:
-                response = provider.complete(messages, timeout=timeout, max_tokens=max_tokens)
+                text, input_tok, output_tok = provider.complete(
+                    messages, timeout=timeout, max_tokens=max_tokens
+                )
                 self.session_state[SESSION_LOCK_KEY] = i
-                return response, provider.model_name
+
+                # Accumulate usage
+                log = list(self.session_state.get(CALL_LOG_KEY, []))
+                log.append({
+                    "model":         provider.model_name,
+                    "input_tokens":  input_tok,
+                    "output_tokens": output_tok,
+                })
+                self.session_state[CALL_LOG_KEY] = log
+
+                return text, provider.model_name
             except FallbackTrigger as e:
                 errors.append(f"{provider.model_name}: {e}")
                 self.session_state["_fallback_errors"] = list(errors)
@@ -122,6 +164,36 @@ class FallbackChain:
         if locked_index is not None and locked_index < len(self.providers):
             return self.providers[locked_index].model_name
         return None
+
+    @property
+    def usage_summary(self) -> dict:
+        """
+        Returns accumulated token usage and estimated cost for this run.
+        Reads from session_state so it works across multiple chain instances.
+        Cost is estimated from APPROX_PRICING — not a billing figure.
+        """
+        log = self.session_state.get(CALL_LOG_KEY, [])
+
+        total_input  = sum(e["input_tokens"]  for e in log)
+        total_output = sum(e["output_tokens"] for e in log)
+        total_cost   = 0.0
+
+        for entry in log:
+            model = entry["model"]
+            price = APPROX_PRICING.get(model)
+            if price:
+                in_price, out_price = price
+                total_cost += (entry["input_tokens"]  / 1_000_000) * in_price
+                total_cost += (entry["output_tokens"] / 1_000_000) * out_price
+
+        return {
+            "call_count":        len(log),
+            "input_tokens":      total_input,
+            "output_tokens":     total_output,
+            "total_tokens":      total_input + total_output,
+            "estimated_cost_usd": total_cost,
+            "call_log":          log,
+        }
 
 
 def get_chain(session_state: dict) -> FallbackChain:
