@@ -346,7 +346,8 @@ def render() -> None:
         )
 
         # ── Step 2: Quality check and retry loop ──────────────────────────────
-        flagged = _combined_flag_check(full_state, chain, researcher_ph, researcher_out, researcher_model)
+        flagged = _combined_flag_check(full_state, chain, researcher_ph, quality_gate_ph,
+                                       researcher_out, researcher_model)
         researcher_attempt = 1
 
         while len(flagged) > 2 and researcher_attempt <= MAX_RESEARCHER_RETRIES:
@@ -370,7 +371,8 @@ def render() -> None:
                 STATUS_COMPLETE, output=researcher_out,
                 model=f"{researcher_model} · {researcher_attempt} attempts", expanded=True,
             )
-            flagged = _combined_flag_check(full_state, chain, researcher_ph, researcher_out,
+            flagged = _combined_flag_check(full_state, chain, researcher_ph, quality_gate_ph,
+                                           researcher_out,
                                            f"{researcher_model} · {researcher_attempt} attempts")
 
         # ── Step 3: Quality gate if still weak after retries ──────────────────
@@ -498,8 +500,8 @@ def render() -> None:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _combined_flag_check(full_state: dict, chain, researcher_ph, researcher_out: str,
-                         researcher_model_label: str) -> list[str]:
+def _combined_flag_check(full_state: dict, chain, researcher_ph, quality_gate_ph,
+                         researcher_out: str, researcher_model_label: str) -> list[str]:
     """
     Two-pass quality check on research results.
 
@@ -508,31 +510,27 @@ def _combined_flag_check(full_state: dict, chain, researcher_ph, researcher_out:
       Fast, free, no LLM involved.
 
     Pass 2 — LLM relevance check (flag_irrelevant_questions):
-      Only runs on questions that passed Pass 1.
-      Flags questions where fewer than half the results directly address the question.
-      Shows a brief status note in the Researcher panel while running.
+      ONE LLM call for all questions (batched). 20-second timeout — skipped if slow.
+      Only checks questions that passed Pass 1.
+      Shows a visible status in quality_gate_ph while running.
 
     Returns the combined list of flagged question strings.
+    quality_gate_ph is cleared before returning so the caller can reuse it.
     """
     research = full_state.get("research", {})
 
-    # Pass 1: objective
+    # Pass 1: objective — instant
     domain_flagged = flag_weak_questions(research)
 
-    # Pass 2: LLM relevance (skip questions already caught by Pass 1)
-    _agent_panel(
-        researcher_ph, "Agent 2: Researcher",
-        "Checking content relevance...",
-        STATUS_COMPLETE, output=researcher_out, model=researcher_model_label,
-    )
+    # Show visible status in the space between Researcher and Critic
+    with quality_gate_ph.container():
+        st.info("🔍 Checking source relevance... (this takes a few seconds)")
+
+    # Pass 2: LLM relevance — one batched call, 20s timeout
     llm_flagged = flag_irrelevant_questions(research, chain, skip=domain_flagged)
 
-    # Restore the clean complete panel after the status note
-    _agent_panel(
-        researcher_ph, "Agent 2: Researcher",
-        "Searches the web for evidence on each question",
-        STATUS_COMPLETE, output=researcher_out, model=researcher_model_label, expanded=True,
-    )
+    # Clear the status — caller will populate quality_gate_ph only if gate triggers
+    quality_gate_ph.empty()
 
     combined = domain_flagged + [q for q in llm_flagged if q not in domain_flagged]
     return combined

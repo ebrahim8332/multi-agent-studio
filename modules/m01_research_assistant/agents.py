@@ -281,7 +281,7 @@ def flag_irrelevant_questions(research: dict, chain, skip: list = None) -> list[
     try:
         response, _ = chain.complete(messages)
     except Exception:
-        return []  # if the check fails entirely, do not penalise any question
+        return []  # if the check fails or times out, do not penalise any question
 
     # Parse "Q1: YES", "Q2: NO", etc.
     flagged = []
