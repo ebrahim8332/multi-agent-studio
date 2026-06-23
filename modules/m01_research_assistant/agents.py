@@ -171,7 +171,7 @@ def run_planner(state: dict, chain, user_edits: str = "") -> dict:
     # Cap at 6 questions
     questions = questions[:6]
 
-    return {"questions": questions, "model_used": model}
+    return {"questions": questions, "model_used": model, "prompt_sent": messages}
 
 
 # ── Agent 2: Researcher ───────────────────────────────────────────────────────
@@ -382,7 +382,7 @@ def run_critic(state: dict, chain) -> dict:
     ]
 
     response, model = chain.complete(messages)
-    return {"critique": response, "model_used": model}
+    return {"critique": response, "model_used": model, "prompt_sent": messages}
 
 
 # ── Agent 4: Writer ───────────────────────────────────────────────────────────
@@ -463,7 +463,7 @@ def run_writer(state: dict, chain) -> dict:
         while draft_lines and not draft_lines[0].strip():
             draft_lines = draft_lines[1:]
 
-    return {"draft": "\n".join(draft_lines), "title": paper_title, "model_used": model}
+    return {"draft": "\n".join(draft_lines), "title": paper_title, "model_used": model, "prompt_sent": messages}
 
 
 # ── Agent 5: Editor ───────────────────────────────────────────────────────────
@@ -514,4 +514,4 @@ def run_editor(state: dict, chain) -> dict:
     ]
 
     response, model = chain.complete(messages, timeout=120, max_tokens=8000)
-    return {"final": response, "model_used": model}
+    return {"final": response, "model_used": model, "prompt_sent": messages}

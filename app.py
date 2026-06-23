@@ -5,6 +5,7 @@ Renders the sidebar navigation and routes to the selected module.
 Modules not yet built show a Coming Soon placeholder automatically.
 """
 
+import traceback
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -83,3 +84,5 @@ else:
         mod.render()
     except Exception as e:
         st.error(f"Module failed to load: {e}")
+        with st.expander("Full error (for debugging)"):
+            st.code(traceback.format_exc())
