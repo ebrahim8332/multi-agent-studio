@@ -49,6 +49,41 @@ class ResearchState(TypedDict):
 
 # ── Pipeline builder ──────────────────────────────────────────────────────────
 
+def build_downstream_graph(chain):
+    """
+    Builds the downstream pipeline: Researcher → Critic → Writer → Editor.
+
+    Used after the Planner approval checkpoint. The Planner has already run
+    and questions are stored in state — this graph picks up from there.
+    """
+
+    def researcher_node(state: ResearchState) -> dict:
+        return run_researcher(state)
+
+    def critic_node(state: ResearchState) -> dict:
+        return run_critic(state, chain)
+
+    def writer_node(state: ResearchState) -> dict:
+        return run_writer(state, chain)
+
+    def editor_node(state: ResearchState) -> dict:
+        return run_editor(state, chain)
+
+    graph = StateGraph(ResearchState)
+    graph.add_node("researcher", researcher_node)
+    graph.add_node("critic",     critic_node)
+    graph.add_node("writer",     writer_node)
+    graph.add_node("editor",     editor_node)
+
+    graph.set_entry_point("researcher")
+    graph.add_edge("researcher", "critic")
+    graph.add_edge("critic",     "writer")
+    graph.add_edge("writer",     "editor")
+    graph.add_edge("editor",     END)
+
+    return graph.compile()
+
+
 def build_graph(chain):
     """
     Builds and compiles the research pipeline.

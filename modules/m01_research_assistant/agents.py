@@ -13,6 +13,19 @@ from utils.search_client import get_search_chain
 
 # Format-specific structure instructions injected into the Writer prompt.
 FORMAT_INSTRUCTIONS = {
+    "White Paper / Analytical": (
+        "Structure: Executive Summary (3-5 sentences stating the core argument and scope), "
+        "then analytical sections each with a clear heading. "
+        "Each section opens with its core finding or claim in the first sentence, "
+        "then provides evidence, context, and explanation. "
+        "Use bullet points to present lists of evidence, data points, or distinct items — "
+        "not action items. Prose between bullets connects and interprets the evidence. "
+        "Do NOT include recommendations sections or tell the reader what to do. "
+        "This is an analytical document. Describe what is happening, why it matters, "
+        "and what the evidence shows. Let the reader draw their own conclusions. "
+        "Conclusions: synthesize the key findings and their implications. Do not prescribe actions. "
+        "Tone: authoritative, direct, written for an intelligent reader who wants to understand a topic deeply."
+    ),
     "McKinsey / Bain": (
         "Structure: open with the single most important recommendation. "
         "Use Situation-Complication-Resolution (SCR) flow throughout. "
@@ -73,11 +86,12 @@ def _question_count(length: str) -> tuple[int, int]:
         return 4, 5
 
 
-def run_planner(state: dict, chain) -> dict:
+def run_planner(state: dict, chain, user_edits: str = "") -> dict:
     """
     Breaks the topic into focused research questions.
     Question count scales to the selected length.
-    Audience and angle both shape the questions.
+    Audience shapes vocabulary only — subject matter stays exactly as given.
+    If user_edits is provided, the Planner uses them as a correction signal and replans.
     Returns: questions (list), model_used (str)
     """
     topic    = state["topic"]
@@ -90,6 +104,15 @@ def run_planner(state: dict, chain) -> dict:
     angle_instruction = (
         f"Focus the questions specifically on this angle: {angle}\n"
         if angle else ""
+    )
+
+    # When the user has edited the previous questions, pass their intent back to the LLM.
+    edit_instruction = (
+        f"The user reviewed your previous questions and provided these edits or directions:\n"
+        f"{user_edits}\n\n"
+        "Treat the user's input as a correction. Produce a revised set of questions "
+        "that reflects their intent exactly.\n\n"
+        if user_edits else ""
     )
 
     messages = [
@@ -107,8 +130,12 @@ def run_planner(state: dict, chain) -> dict:
                 f"Topic: {topic}\n"
                 f"Audience: {audience}\n"
                 f"{angle_instruction}"
-                f"\nGenerate {q_min} to {q_max} focused research questions that together cover this topic. "
-                f"Frame each question for a {audience} — use vocabulary and concerns that matter to that audience. "
+                f"{edit_instruction}"
+                f"\nGenerate {q_min} to {q_max} focused research questions that together cover this topic exactly as stated. "
+                "Stay faithful to the topic — do not reinterpret it or shift to a related subject. "
+                "For example, if the topic is about technology evolution, ask about technology evolution — "
+                "not about business impact, enterprise adoption, or any other adjacent theme. "
+                "Use vocabulary appropriate for the stated audience, but keep the subject matter exactly as given. "
                 "Each question should be specific enough to search for directly. "
                 "Number each question (1. 2. 3. etc). One question per line. Nothing else."
             ),
