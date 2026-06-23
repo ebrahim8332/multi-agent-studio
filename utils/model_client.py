@@ -122,7 +122,8 @@ class FallbackChain:
         self.session_state = session_state
 
     def complete(self, messages: list[dict], timeout: int = 90,
-                 max_tokens: int | None = None) -> tuple[str, str]:
+                 max_tokens: int | None = None,
+                 agent_label: str = "") -> tuple[str, str]:
         """Returns (response_text, model_name) from the first provider that succeeds.
         Also accumulates token counts into session_state for the run summary."""
         start_index = self.session_state.get(SESSION_LOCK_KEY) or 0
@@ -139,6 +140,7 @@ class FallbackChain:
                 # Accumulate usage
                 log = list(self.session_state.get(CALL_LOG_KEY, []))
                 log.append({
+                    "agent":         agent_label,
                     "model":         provider.model_name,
                     "input_tokens":  input_tok,
                     "output_tokens": output_tok,

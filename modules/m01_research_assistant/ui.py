@@ -780,18 +780,25 @@ def _show_run_summary() -> None:
             st.metric("Est. cost (USD)", cost_str)
 
         st.caption(f"Input: {total_input:,} tokens · Output: {total_output:,} tokens")
+        st.caption(
+            "Input tokens are what you send to the model — your topic, instructions, and all "
+            "source text. Output tokens are the model's response. Input is typically 3–10× "
+            "larger than output, which is why input price matters even though it costs less per token."
+        )
         st.markdown("")
         st.markdown("**Call detail**")
         for i, entry in enumerate(log, 1):
-            in_t  = entry["input_tokens"]
-            out_t = entry["output_tokens"]
-            model = entry["model"]
-            price = APPROX_PRICING.get(model)
+            in_t   = entry["input_tokens"]
+            out_t  = entry["output_tokens"]
+            model  = entry["model"]
+            agent  = entry.get("agent", "")
+            label  = f"**{agent}** | {model}" if agent else model
+            price  = APPROX_PRICING.get(model)
             if price:
                 call_cost = f" · ~${((in_t/1_000_000)*price[0] + (out_t/1_000_000)*price[1]):.5f}"
             else:
                 call_cost = ""
-            st.caption(f"Call {i}: **{model}** — {in_t:,} in · {out_t:,} out{call_cost}")
+            st.caption(f"Call {i}: {label} — {in_t:,} in · {out_t:,} out{call_cost}")
 
         st.markdown("")
         st.caption(

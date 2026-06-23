@@ -150,7 +150,7 @@ def run_planner(state: dict, chain, user_edits: str = "") -> dict:
         },
     ]
 
-    response, model = chain.complete(messages)
+    response, model = chain.complete(messages, agent_label="Planner")
 
     # Parse numbered list from the response.
     # Handles formats like: "1. Question", "1) Question", "1 - Question"
@@ -279,7 +279,7 @@ def flag_irrelevant_questions(research: dict, chain, skip: list = None) -> list[
     ]
 
     try:
-        response, _ = chain.complete(messages)
+        response, _ = chain.complete(messages, agent_label="Quality gate")
     except Exception:
         return []  # if the check fails or times out, do not penalise any question
 
@@ -381,7 +381,7 @@ def run_critic(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages)
+    response, model = chain.complete(messages, agent_label="Critic")
     return {"critique": response, "model_used": model, "prompt_sent": messages}
 
 
@@ -450,7 +450,7 @@ def run_writer(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, timeout=120, max_tokens=8000)
+    response, model = chain.complete(messages, timeout=120, max_tokens=8000, agent_label="Writer")
 
     # Extract TITLE: line from the top of the response
     lines = response.strip().split("\n")
@@ -513,5 +513,5 @@ def run_editor(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, timeout=120, max_tokens=8000)
+    response, model = chain.complete(messages, timeout=120, max_tokens=8000, agent_label="Editor")
     return {"final": response, "model_used": model, "prompt_sent": messages}
