@@ -503,6 +503,7 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
     audience     = state.get("audience", "General business audience")
     format_style = state.get("format_style", "McKinsey / Bain")
     length       = state.get("length", "Standard paper (~2,000 words, 4-5 pages)")
+    angle        = state.get("angle", "")
 
     format_instructions = FORMAT_INSTRUCTIONS.get(format_style, FORMAT_INSTRUCTIONS["McKinsey / Bain"])
     target_words, _     = LENGTH_WORD_TARGETS.get(length, (2000, 1000))
