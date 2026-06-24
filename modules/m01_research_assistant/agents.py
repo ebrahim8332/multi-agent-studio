@@ -145,6 +145,29 @@ FORMAT_INSTRUCTIONS = {
     ),
 }
 
+def _parse_critic_ratings(critique: str, questions: list) -> dict:
+    """
+    Parses Critic output to extract per-question ratings.
+    Splits the critique by 'Question:' blocks (in the order the Critic received them)
+    and reads the 'Rating:' line from each block.
+    Falls back to 'Adequate' for any question that cannot be parsed.
+    Returns: {question_text: "Strong" | "Adequate" | "Weak"}
+    """
+    ratings = {}
+    blocks = re.split(r"\nQuestion:", "\n" + critique)
+    blocks = [b.strip() for b in blocks if b.strip()]
+
+    for i, question in enumerate(questions):
+        if i < len(blocks):
+            m = re.search(r"Rating:\s*(Strong|Adequate|Weak)", blocks[i], re.IGNORECASE)
+            rating = m.group(1).capitalize() if m else "Adequate"
+        else:
+            rating = "Adequate"
+        ratings[question] = rating
+
+    return ratings
+
+
 # Writing style rules injected into every prompt that produces text.
 # These enforce Alnoor's anti-AI writing style across all agent outputs.
 STYLE_RULES = """
@@ -513,9 +536,14 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
         if angle else ""
     )
 
-    # Build a structured evidence block — include domain for source authority signal
+    # Parse Critic ratings so each evidence block can be annotated inline.
+    # This lets the Writer see source quality for each question without cross-referencing.
+    critic_ratings = _parse_critic_ratings(critique, questions)
+
+    # Build a structured evidence block — include domain and Critic rating per question
     evidence_blocks = []
     for q in questions:
+        rating = critic_ratings.get(q, "Adequate")
         hits = research.get(q, [])
         snippets = []
         for hit in hits:
@@ -530,7 +558,8 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
             domain_str = f" [{domain}]" if domain else ""
             snippets.append(f"  - {title}{domain_str}: {content}")
         evidence_blocks.append(
-            f"Question: {q}\n" + ("\n".join(snippets) if snippets else "  - No sources found")
+            f"Question: {q} [Critic source rating: {rating}]\n"
+            + ("\n".join(snippets) if snippets else "  - No sources found")
         )
 
     evidence_text = "\n\n".join(evidence_blocks)
@@ -613,6 +642,8 @@ def run_judge(state: dict, chain) -> dict:
     """
     draft        = state.get("draft", "")
     topic        = state.get("topic", "")
+    questions    = state.get("questions", [])
+    angle        = state.get("angle", "")
     format_style = state.get("format_style", "White Paper / Analytical")
     length       = state.get("length", "Standard length (~2,000 words, 4-5 pages)")
     critique     = state.get("critique", "")
@@ -648,8 +679,18 @@ def run_judge(state: dict, chain) -> dict:
                 "where 1 = very poor, 3 = acceptable, 5 = excellent. "
                 "Be critical. Reserve 5 for genuinely strong work. A score of 3 means the "
                 "dimension is acceptable but has clear room for improvement. "
-                "You have full context: the topic, the required format with its specific "
-                "structural requirements, the source quality assessment, and the complete draft. "
+                "You have full context: the topic, the research questions, the required format "
+                "with its specific structural requirements, the source quality assessment, "
+                "and the complete draft.\n\n"
+                "Dimension definitions:\n"
+                "COMPLETENESS: does the paper substantively address every research question listed? "
+                "Flag any question that is skipped, underdeveloped, or mentioned only in passing.\n"
+                "ARGUMENT_QUALITY: are claims well-reasoned and supported by evidence? "
+                "Does the paper synthesise across sources rather than summarise them serially?\n"
+                "SOURCE_INTEGRATION: are sources cited in context, with their quality accurately "
+                "reflected? Are Weak-rated sources treated with appropriate caution?\n"
+                "FORMAT_ADHERENCE: does the structure, tone, and organisation match the required "
+                "format exactly? Check against the format instructions provided.\n\n"
                 "Respond with exactly four lines — nothing else:\n"
                 "COMPLETENESS: [1-5] | [one sentence note]\n"
                 "ARGUMENT_QUALITY: [1-5] | [one sentence note]\n"
@@ -662,8 +703,11 @@ def run_judge(state: dict, chain) -> dict:
             "content": (
                 f"Topic: {topic}\n"
                 f"Target format: {format_style}\n"
-                f"Target length: approximately {target_words:,} words\n\n"
-                f"What FORMAT_ADHERENCE means for this format:\n{format_instructions}\n\n"
+                f"Target length: approximately {target_words:,} words\n"
+                + (f"Required angle: {angle}\n" if angle else "")
+                + f"\nResearch questions the paper must address:\n"
+                + "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
+                + f"\n\nWhat FORMAT_ADHERENCE means for this format:\n{format_instructions}\n\n"
                 f"Critic's source quality assessment:\n{critique}\n\n"
                 f"Complete draft to evaluate:\n{draft}"
             ),
@@ -718,6 +762,7 @@ def run_editor(state: dict, chain) -> dict:
     """
     topic        = state["topic"]
     draft        = state["draft"]
+    title        = state.get("title", "")
     critique     = state.get("critique", "")
     audience     = state.get("audience", "General business audience")
     format_style = state.get("format_style", "McKinsey / Bain")
@@ -746,7 +791,8 @@ def run_editor(state: dict, chain) -> dict:
             "role": "user",
             "content": (
                 f"Topic: {topic}\n"
-                f"Audience: {audience}\n"
+                + (f"Paper title: {title}\n" if title else "")
+                + f"Audience: {audience}\n"
                 f"Format: {format_style}\n"
                 f"Target length: approximately {target_words:,} words\n"
                 f"{angle_instruction}"
@@ -767,7 +813,10 @@ def run_editor(state: dict, chain) -> dict:
                 "8. Preserve all ## section headings and ### subheadings exactly as written — "
                 "do not change heading levels or remove headings\n"
                 "9. Confirm the topic and angle are maintained throughout — do not let the "
-                "paper drift to adjacent subjects\n\n"
+                "paper drift to adjacent subjects\n"
+                + (f"10. Preserve the paper title exactly as given: \"{title}\" — "
+                   "do not change, shorten, or paraphrase it\n" if title else "")
+                + "\n"
                 "Return the complete edited paper from start to finish. "
                 "Do not stop mid-section. Do not summarise or skip sections."
             ),
