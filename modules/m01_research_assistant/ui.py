@@ -110,7 +110,24 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
             st.markdown(status)
         if running:
             st.caption("⏳ Working...")
-            st.markdown('<div id="m01-active-agent"></div>', unsafe_allow_html=True)
+            components.html(
+                """
+                <script>
+                    // Scroll the parent page to this iframe's position.
+                    // Iterates iframes and matches by contentWindow — no cross-origin access needed.
+                    var frames = window.parent.document.querySelectorAll('iframe');
+                    for (var i = 0; i < frames.length; i++) {
+                        try {
+                            if (frames[i].contentWindow === window) {
+                                frames[i].scrollIntoView({behavior: 'smooth', block: 'center'});
+                                break;
+                            }
+                        } catch(e) {}
+                    }
+                </script>
+                """,
+                height=0,
+            )
         if output:
             with st.expander("View output", expanded=expanded):
                 st.markdown(output)
@@ -128,21 +145,6 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
                     )
                     st.code(display, language=None)
         st.divider()
-
-
-def _scroll_to_active() -> None:
-    """Scrolls the browser to the running agent panel."""
-    components.html(
-        """
-        <script>
-            var el = window.parent.document.getElementById('m01-active-agent');
-            if (el) {
-                el.scrollIntoView({behavior: 'smooth', block: 'center'});
-            }
-        </script>
-        """,
-        height=0,
-    )
 
 
 # ── Main render ───────────────────────────────────────────────────────────────
@@ -377,7 +379,6 @@ div[data-baseweb="select"] * { cursor: pointer; }
             "Searching the web for evidence on each question",
             STATUS_RUNNING, running=True,
         )
-        _scroll_to_active()
         try:
             with st.spinner("Searching the web... (this takes 10–20 seconds)"):
                 result = run_researcher(full_state)
@@ -412,7 +413,6 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 f"Re-searching {len(flagged)} weak question(s) — attempt {researcher_attempt} of {MAX_RESEARCHER_RETRIES + 1}",
                 STATUS_RUNNING, running=True,
             )
-            _scroll_to_active()
             try:
                 with st.spinner(f"Re-searching {len(flagged)} question(s)..."):
                     result = run_researcher(full_state, target_questions=flagged)
@@ -535,7 +535,6 @@ div[data-baseweb="select"] * { cursor: pointer; }
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assessing source quality and flagging gaps",
                      STATUS_RUNNING, running=True)
-        _scroll_to_active()
         for name, label, desc in AGENTS[3:]:
             _agent_panel(ph[name], label, desc, STATUS_WAITING)
 
@@ -660,7 +659,6 @@ div[data-baseweb="select"] * { cursor: pointer; }
         _agent_panel(writer_ph, "Agent 4: Writer",
                      f"Drafting the research paper{w_attempt_note}",
                      STATUS_RUNNING, running=True)
-        _scroll_to_active()
         _agent_panel(judge_ph,  "Agent 5: Judge",
                      "Evaluates draft quality before the Editor runs", STATUS_WAITING)
         _agent_panel(editor_ph, "Agent 6: Editor",
@@ -734,7 +732,6 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      STATUS_COMPLETE, output=writer_out, model=writer_model, prompt=writer_prompt)
         _agent_panel(judge_ph, "Agent 5: Judge",
                      "Evaluating draft quality...", STATUS_RUNNING, running=True)
-        _scroll_to_active()
         _agent_panel(editor_ph, "Agent 6: Editor",
                      "Polishes the draft and removes weak language", STATUS_WAITING)
 
@@ -911,7 +908,6 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      STATUS_COMPLETE, output=judge_out, model=judge_model, prompt=judge_prompt)
         _agent_panel(editor_ph, "Agent 6: Editor",
                      "Polishing the draft", STATUS_RUNNING, running=True)
-        _scroll_to_active()
 
         try:
             with st.spinner("Polishing the draft..."):
@@ -983,7 +979,6 @@ def _start_planner(topic, angle, audience, format_style, length, planner_ph) -> 
     """Runs the Planner and stores results, then reruns into planner_done."""
     _, label, desc = AGENTS[0]
     _agent_panel(planner_ph, label, desc, STATUS_RUNNING, running=True)
-    _scroll_to_active()
 
     chain = get_chain(st.session_state)
     state = get_initial_state(topic, audience, format_style, length, angle)
