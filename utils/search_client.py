@@ -98,6 +98,13 @@ class SearchChain:
     Returns an empty list only when all providers fail — never raises.
     """
 
+    def __init__(self):
+        self._active_provider = ""
+
+    def active_provider_name(self) -> str:
+        """Returns the name of the provider that succeeded on the last search."""
+        return self._active_provider or "Unknown"
+
     def search(self, query: str, max_results: int = 3) -> list[dict]:
         """
         Runs the query against providers in order.
@@ -107,6 +114,7 @@ class SearchChain:
             try:
                 results = fn(query, max_results)
                 if results:
+                    self._active_provider = name
                     return results
             except Exception:
                 continue

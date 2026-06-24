@@ -315,15 +315,20 @@ def run_researcher(state: dict, target_questions: list = None) -> dict:
     search      = get_search_chain()
     new_research, new_sources = search.search_multi(questions, max_results=max_results)
 
+    prompt_sent = [
+        {"role": "system", "content": f"Search engine: {search.active_provider_name()}\nMax results per query: {max_results}"},
+        {"role": "user",   "content": "Search queries:\n\n" + "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))},
+    ]
+
     if target_questions is not None:
         # Merge into existing research — only targeted questions are updated
         merged = dict(state.get("research", {}))
         merged.update(new_research)
         existing_sources = list(state.get("sources", []))
         merged_sources   = existing_sources + [s for s in new_sources if s not in existing_sources]
-        return {"research": merged, "sources": merged_sources}
+        return {"research": merged, "sources": merged_sources, "prompt_sent": prompt_sent}
 
-    return {"research": new_research, "sources": new_sources}
+    return {"research": new_research, "sources": new_sources, "prompt_sent": prompt_sent}
 
 
 # ── Agent 3: Critic ───────────────────────────────────────────────────────────

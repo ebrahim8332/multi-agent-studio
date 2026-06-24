@@ -104,7 +104,7 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
         with col2:
             st.markdown(status)
         if running:
-            st.spinner("Working...")
+            st.caption("⏳ Working...")
         if output:
             with st.expander("View output", expanded=expanded):
                 st.markdown(output)
@@ -139,6 +139,14 @@ def render() -> None:
         "- **Editor agent** — polishes the language and confirms the format"
     )
     st.markdown("---")
+
+    # Fix 1: pointer cursor on all selectbox dropdowns
+    st.markdown("""
+<style>
+div[data-baseweb="select"] { cursor: pointer; }
+div[data-baseweb="select"] * { cursor: pointer; }
+</style>
+""", unsafe_allow_html=True)
 
     if "m01_form_key" not in st.session_state:
         st.session_state["m01_form_key"] = 0
@@ -344,7 +352,8 @@ def render() -> None:
             STATUS_RUNNING, running=True,
         )
         try:
-            result = run_researcher(full_state)
+            with st.spinner("Searching the web... (this takes 10–20 seconds)"):
+                result = run_researcher(full_state)
             full_state.update(result)
         except Exception as e:
             _agent_panel(researcher_ph, "Agent 2: Researcher", "", STATUS_FAILED)
@@ -353,13 +362,15 @@ def render() -> None:
             st.error(f"Researcher failed: {e}")
             return
 
-        researcher_out   = _format_researcher_output(full_state)
-        researcher_model = full_state.get("model_used", "")
-        agent_outputs["researcher"] = {"output": researcher_out, "model": researcher_model, "prompt": []}
+        researcher_out    = _format_researcher_output(full_state)
+        researcher_model  = full_state.get("model_used", "")
+        researcher_prompt = result.get("prompt_sent", [])
+        agent_outputs["researcher"] = {"output": researcher_out, "model": researcher_model, "prompt": researcher_prompt}
         _agent_panel(
             researcher_ph, "Agent 2: Researcher",
             "Searches the web for evidence on each question",
-            STATUS_COMPLETE, output=researcher_out, model=researcher_model, expanded=True,
+            STATUS_COMPLETE, output=researcher_out, model=researcher_model,
+            expanded=True, prompt=researcher_prompt,
         )
 
         # ── Quality gate ──────────────────────────────────────────────────────
@@ -375,18 +386,21 @@ def render() -> None:
                 STATUS_RUNNING, running=True,
             )
             try:
-                result = run_researcher(full_state, target_questions=flagged)
+                with st.spinner(f"Re-searching {len(flagged)} question(s)..."):
+                    result = run_researcher(full_state, target_questions=flagged)
                 full_state.update(result)
             except Exception:
                 break
 
-            researcher_out = _format_researcher_output(full_state)
-            agent_outputs["researcher"] = {"output": researcher_out, "model": researcher_model, "prompt": []}
+            researcher_out    = _format_researcher_output(full_state)
+            researcher_prompt = result.get("prompt_sent", [])
+            agent_outputs["researcher"] = {"output": researcher_out, "model": researcher_model, "prompt": researcher_prompt}
             _agent_panel(
                 researcher_ph, "Agent 2: Researcher",
                 "Searches the web for evidence on each question",
                 STATUS_COMPLETE, output=researcher_out,
-                model=f"{researcher_model} · {researcher_attempt} attempts", expanded=True,
+                model=f"{researcher_model} · {researcher_attempt} attempts",
+                expanded=True, prompt=researcher_prompt,
             )
             flagged = _combined_flag_check(
                 full_state, chain, researcher_ph, quality_gate_ph,
