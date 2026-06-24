@@ -1258,11 +1258,11 @@ def _format_critic_output(critique: str) -> str:
     result = critique
 
     # Step 1 — break fields onto their own lines when they appear mid-sentence.
-    # Pattern: capture the character before the whitespace so we can keep it,
-    # then replace the whitespace before the keyword with a newline.
-    result = re.sub(r"([^\n])\s+(Rating:)",           r"\1\n\2",  result, flags=re.IGNORECASE)
-    result = re.sub(r"([^\n])\s+(Strongest source:)", r"\1\n\2",  result, flags=re.IGNORECASE)
-    result = re.sub(r"([^\n])\s+(Gap:)\s*",           r"\1\n\2 ", result, flags=re.IGNORECASE)
+    # Markdown requires two trailing spaces + \n for a <br>, or \n\n for a paragraph break.
+    # We use \n\n so each field is clearly separated regardless of renderer.
+    result = re.sub(r"([^\n])\s+(Rating:)",           r"\1\n\n\2",  result, flags=re.IGNORECASE)
+    result = re.sub(r"([^\n])\s+(Strongest source:)", r"\1\n\n\2",  result, flags=re.IGNORECASE)
+    result = re.sub(r"([^\n])\s+(Gap:)\s*",           r"\1\n\n\2 ", result, flags=re.IGNORECASE)
 
     # Step 2 — Rating with colour icon and bold
     result = re.sub(r"Rating:\s*Strong",   "**🟢 Rating: Strong**",   result, flags=re.IGNORECASE)
