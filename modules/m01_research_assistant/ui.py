@@ -135,12 +135,13 @@ def render() -> None:
     st.caption("Six agents research, critique, write, judge, and edit a structured paper.")
     st.markdown(
         "Six specialized AI agents run in sequence — an **agent pipeline** where each agent "
-        "builds on the work of the one before it.\n\n"
-        "- **Planner agent** — breaks your topic into focused research questions\n"
+        "builds on the work of the one before it. "
+        "✋ marks a human checkpoint where you review and approve before the next agent runs.\n\n"
+        "- **Planner agent** — breaks your topic into focused research questions ✋\n"
         "- **Researcher agent** — searches the live web for evidence on each question\n"
-        "- **Critic agent** — evaluates source quality and flags gaps\n"
+        "- **Critic agent** — evaluates source quality and flags gaps ✋\n"
         "- **Writer agent** — drafts a full structured paper from the evidence\n"
-        "- **Judge agent** — scores the draft on four quality dimensions before the Editor runs\n"
+        "- **Judge agent** — scores the draft on four quality dimensions ✋\n"
         "- **Editor agent** — polishes the language and confirms the format"
     )
     st.markdown("---")
