@@ -20,6 +20,7 @@ All session state keys are prefixed "m01_" to stay isolated from other modules.
 Token usage is accumulated in "m01_call_log" by the model chain.
 """
 
+import re
 import streamlit as st
 import streamlit.components.v1 as components
 from utils.model_client import get_chain, APPROX_PRICING
@@ -596,11 +597,60 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      STATUS_COMPLETE, output=critic_out, model=critic_model,
                      expanded=True, prompt=critic_prompt)
 
+        # ── Smart Critic checkpoint ───────────────────────────────────────────
+        summary    = _parse_critic_summary(critic_out, questions)
+        ratings    = [e["rating"] for e in summary]
+        all_strong = all(r == "Strong" for r in ratings)
+        weak_count = sum(1 for r in ratings if r == "Weak")
+
+        if all_strong:
+            # No human decision needed — all sources rated Strong, proceed automatically
+            st.session_state["m01_phase"] = "writing"
+            st.rerun()
+            return
+
+        # One or more questions are Adequate or Weak — show the checkpoint
         with critic_gate_ph.container():
-            st.info(
-                "The Critic has assessed your sources. Review the ratings above. "
-                "Weak ratings mean the Writer will note those gaps — it will not invent facts."
-            )
+            strong_count   = sum(1 for r in ratings if r == "Strong")
+            adequate_count = sum(1 for r in ratings if r == "Adequate")
+            total          = len(ratings)
+
+            # Recommendation line
+            if weak_count > 0:
+                rec = (
+                    f"**{weak_count} of {total} question(s) have weak sources.** "
+                    "The Writer will flag these gaps rather than invent facts. "
+                    "Proceeding is fine if the gaps are acceptable for your purpose."
+                )
+                st.warning(rec)
+            else:
+                rec = (
+                    f"**{strong_count} of {total} question(s) have strong sources. "
+                    f"{adequate_count} are adequate** — some coverage gaps exist but evidence is present."
+                )
+                st.info(rec)
+
+            # Per-question table
+            st.markdown("**Source quality by question:**")
+            for entry in summary:
+                rating = entry["rating"]
+                icon   = "🟢" if rating == "Strong" else ("🟡" if rating == "Adequate" else "🔴")
+                q_text = entry["question"][:90] + ("..." if len(entry["question"]) > 90 else "")
+                gap    = entry["gap"]
+                best   = entry["source"]
+
+                col_icon, col_q, col_gap = st.columns([0.5, 3, 3])
+                with col_icon:
+                    st.markdown(f"{icon} **{rating}**")
+                with col_q:
+                    st.caption(q_text)
+                with col_gap:
+                    if gap and gap.lower() not in ("none", "none identified"):
+                        st.caption(f"Gap: {gap}")
+                    elif rating == "Strong":
+                        st.caption(f"Best source: {best}")
+
+            st.markdown("")
             col1, col2 = st.columns([1, 1])
             with col1:
                 if st.button("Proceed to Writer →", type="primary"):
@@ -806,14 +856,66 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      STATUS_COMPLETE, output=judge_out, model=judge_model,
                      expanded=True, prompt=judge_prompt)
 
+        # ── Smart Judge checkpoint ────────────────────────────────────────────
+        scores     = judge_result.get("scores", {})
+        rule       = judge_result.get("rule_check", {})
+        all_pass   = (
+            rule.get("word_count_ok", False)
+            and rule.get("sections_ok", False)
+            and all(v.get("score", 0) >= 4 for v in scores.values())
+        )
+
+        if all_pass and not judge_editing:
+            # All dimensions ≥ 4 and rule checks pass — no human decision needed
+            judge_gate_ph.empty()
+            st.session_state["m01_phase"] = "editor_running"
+            st.rerun()
+            return
+
         with judge_gate_ph.container():
-            if flagged:
-                st.warning("The Judge flagged quality concerns. Review the scores above before continuing.")
+            can_redraft = writer_attempt <= MAX_WRITER_RETRIES
+
+            # Recommendation line
+            low_dims = [
+                (k, v) for k, v in scores.items() if v.get("score", 5) < 4
+            ]
+            rule_fail = not rule.get("word_count_ok", True) or not rule.get("sections_ok", True)
+
+            if rule_fail or low_dims:
+                issues = []
+                if not rule.get("word_count_ok", True):
+                    issues.append(f"word count short ({rule.get('word_count', 0):,} vs {rule.get('word_count_target', 0):,} target)")
+                if not rule.get("sections_ok", True):
+                    issues.append(f"too few sections ({rule.get('section_count', 0)} vs {rule.get('min_sections', 0)} minimum)")
+                dim_names = {
+                    "completeness": "Completeness", "argument_quality": "Argument quality",
+                    "source_integration": "Source integration", "format_adherence": "Format adherence",
+                }
+                for k, v in low_dims:
+                    score = v.get("score", 0)
+                    issues.append(f"{dim_names.get(k, k)} scored {score}/5")
+                rec = "**Issues found:** " + ", ".join(issues) + ". "
+                rec += "You can proceed anyway or re-draft with specific feedback."
+                st.warning(rec)
             else:
                 st.success("The Judge rated the draft acceptable on all dimensions.")
+
+            # Scorecard
             _show_judge_scorecard(judge_result)
 
-            can_redraft = writer_attempt <= MAX_WRITER_RETRIES
+            # Highlight specific notes for any dimension below 4
+            if low_dims:
+                dim_names = {
+                    "completeness": "Completeness", "argument_quality": "Argument quality",
+                    "source_integration": "Source integration", "format_adherence": "Format adherence",
+                }
+                st.markdown("**What the Judge said about the low-scoring dimensions:**")
+                for k, v in low_dims:
+                    score = v.get("score", 0)
+                    note  = v.get("note", "No note provided.")
+                    icon  = "🔴" if score < 3 else "🟡"
+                    st.caption(f"{icon} **{dim_names.get(k, k)} ({score}/5):** {note}")
+
             if not judge_editing:
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -1103,6 +1205,30 @@ def _show_judge_scorecard(result: dict) -> None:
             st.progress(score / 5)
         if note:
             st.caption(f"   {note}")
+
+
+def _parse_critic_summary(critique: str, questions: list) -> list:
+    """
+    Parses Critic output into a list of dicts: {question, rating, source, gap}.
+    One dict per question, in order. Falls back gracefully if any field is missing.
+    """
+    results = []
+    blocks = re.split(r"\nQuestion:", "\n" + critique)
+    blocks = [b.strip() for b in blocks if b.strip()]
+
+    for i, question in enumerate(questions):
+        block    = blocks[i] if i < len(blocks) else ""
+        rating_m = re.search(r"Rating:\s*(Strong|Adequate|Weak)", block, re.IGNORECASE)
+        source_m = re.search(r"Strongest source:\s*(.+)", block)
+        gap_m    = re.search(r"Gap:\s*(.+)", block)
+        results.append({
+            "question": question,
+            "rating":   rating_m.group(1).capitalize() if rating_m else "Adequate",
+            "source":   source_m.group(1).strip() if source_m else "Not specified",
+            "gap":      gap_m.group(1).strip() if gap_m else "None identified",
+        })
+
+    return results
 
 
 def _show_sources() -> None:
