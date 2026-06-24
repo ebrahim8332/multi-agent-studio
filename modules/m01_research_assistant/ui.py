@@ -559,7 +559,34 @@ div[data-baseweb="select"] * { cursor: pointer; }
         critic_out    = result.get("critique", "")
         critic_model  = result.get("model_used", "")
         critic_prompt = result.get("prompt_sent", [])
-        agent_outputs["critic"] = {"output": critic_out, "model": critic_model, "prompt": critic_prompt}
+
+        # Build verdict summary — stored at top of output so it's visible in every dropdown
+        _summary      = _parse_critic_summary(critic_out, full_state.get("questions", [])  )
+        _ratings      = [e["rating"] for e in _summary]
+        _strong       = sum(1 for r in _ratings if r == "Strong")
+        _adequate     = sum(1 for r in _ratings if r == "Adequate")
+        _weak         = sum(1 for r in _ratings if r == "Weak")
+        _total        = len(_ratings)
+        if _weak == 0:
+            _verdict = (
+                f"✅ **Verdict: Good to proceed.** "
+                f"All {_total} questions have relevant sources ({_strong} strong, {_adequate} adequate). "
+                "The Writer has enough evidence. It will flag thin areas rather than invent facts."
+            )
+        elif _weak <= _total // 2:
+            _verdict = (
+                f"⚠️ **Verdict: Proceed with caution.** "
+                f"{_weak} of {_total} questions have weak sources. "
+                "The paper will have gaps in those areas."
+            )
+        else:
+            _verdict = (
+                f"❌ **Verdict: Consider stopping.** "
+                f"{_weak} of {_total} questions have weak sources. "
+                "Most of the paper will lack solid evidence."
+            )
+        critic_display = _verdict + "\n\n---\n\n" + critic_out
+        agent_outputs["critic"] = {"output": critic_display, "model": critic_model, "prompt": critic_prompt}
 
         st.session_state["m01_pending_state"]  = full_state
         st.session_state["m01_agent_outputs"]  = agent_outputs
