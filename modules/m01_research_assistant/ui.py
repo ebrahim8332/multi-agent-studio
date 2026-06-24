@@ -444,8 +444,9 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
         attempt_note     = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
         planner_out      = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-        researcher_out   = agent_outputs.get("researcher", {}).get("output", "")
-        researcher_model = agent_outputs.get("researcher", {}).get("model", "")
+        researcher_out    = agent_outputs.get("researcher", {}).get("output", "")
+        researcher_model  = agent_outputs.get("researcher", {}).get("model", "")
+        researcher_prompt = agent_outputs.get("researcher", {}).get("prompt", [])
 
         _agent_panel(planner_ph, "Agent 1: Planner",
                      "Breaks the topic into focused research questions",
@@ -454,7 +455,8 @@ div[data-baseweb="select"] * { cursor: pointer; }
         _agent_panel(researcher_ph, "Agent 2: Researcher",
                      f"Completed {r_attempt + 1} search attempt(s)",
                      STATUS_COMPLETE, output=researcher_out,
-                     model=f"{researcher_model} · {r_attempt + 1} attempts")
+                     model=f"{researcher_model} · {r_attempt + 1} attempts",
+                     prompt=researcher_prompt)
 
         with quality_gate_ph.container():
             st.warning(
@@ -496,8 +498,9 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
         attempt_note     = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
         planner_out      = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-        researcher_out   = agent_outputs.get("researcher", {}).get("output", "")
-        researcher_model = agent_outputs.get("researcher", {}).get("model", "")
+        researcher_out    = agent_outputs.get("researcher", {}).get("output", "")
+        researcher_model  = agent_outputs.get("researcher", {}).get("model", "")
+        researcher_prompt = agent_outputs.get("researcher", {}).get("prompt", [])
 
         _agent_panel(planner_ph, "Agent 1: Planner",
                      "Breaks the topic into focused research questions",
@@ -505,7 +508,8 @@ div[data-baseweb="select"] * { cursor: pointer; }
         approval_ph.empty()
         _agent_panel(researcher_ph, "Agent 2: Researcher",
                      "Searches the web for evidence on each question",
-                     STATUS_COMPLETE, output=researcher_out, model=researcher_model)
+                     STATUS_COMPLETE, output=researcher_out, model=researcher_model,
+                     prompt=researcher_prompt)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assessing source quality and flagging gaps",
@@ -550,8 +554,9 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
         attempt_note     = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
         planner_out      = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-        researcher_out   = agent_outputs.get("researcher", {}).get("output", "")
-        researcher_model = agent_outputs.get("researcher", {}).get("model", "")
+        researcher_out    = agent_outputs.get("researcher", {}).get("output", "")
+        researcher_model  = agent_outputs.get("researcher", {}).get("model", "")
+        researcher_prompt = agent_outputs.get("researcher", {}).get("prompt", [])
         critic_out    = agent_outputs.get("critic", {}).get("output", "")
         critic_model  = agent_outputs.get("critic", {}).get("model", "")
         critic_prompt = agent_outputs.get("critic", {}).get("prompt", [])
@@ -562,7 +567,8 @@ div[data-baseweb="select"] * { cursor: pointer; }
         approval_ph.empty()
         _agent_panel(researcher_ph, "Agent 2: Researcher",
                      "Searches the web for evidence on each question",
-                     STATUS_COMPLETE, output=researcher_out, model=researcher_model)
+                     STATUS_COMPLETE, output=researcher_out, model=researcher_model,
+                     prompt=researcher_prompt)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
