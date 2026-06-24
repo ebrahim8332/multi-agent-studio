@@ -1250,20 +1250,26 @@ def _show_judge_scorecard(result: dict) -> None:
 
 def _format_critic_output(critique: str) -> str:
     """
-    Applies icon and bold formatting to Critic output.
-    Works on whatever structure the LLM produces — no restructuring.
-    - Rating lines get a colour icon and bold
-    - Strongest source and Gap labels are bolded
-    - Overall Assessment heading is bolded
+    Reformats Critic output so each field is on its own line, with icon and bold.
+    The LLM often runs Question / Rating / Strongest source / Gap on one line.
+    Step 1: insert line breaks before each field label when mid-line.
+    Step 2: apply icon and bold formatting.
     """
     result = critique
 
-    # Rating with colour icon and bold
+    # Step 1 — break fields onto their own lines when they appear mid-sentence.
+    # Pattern: capture the character before the whitespace so we can keep it,
+    # then replace the whitespace before the keyword with a newline.
+    result = re.sub(r"([^\n])\s+(Rating:)",           r"\1\n\2",  result, flags=re.IGNORECASE)
+    result = re.sub(r"([^\n])\s+(Strongest source:)", r"\1\n\2",  result, flags=re.IGNORECASE)
+    result = re.sub(r"([^\n])\s+(Gap:)\s*",           r"\1\n\2 ", result, flags=re.IGNORECASE)
+
+    # Step 2 — Rating with colour icon and bold
     result = re.sub(r"Rating:\s*Strong",   "**🟢 Rating: Strong**",   result, flags=re.IGNORECASE)
     result = re.sub(r"Rating:\s*Adequate", "**🟡 Rating: Adequate**", result, flags=re.IGNORECASE)
     result = re.sub(r"Rating:\s*Weak",     "**🔴 Rating: Weak**",     result, flags=re.IGNORECASE)
 
-    # Bold field labels
+    # Bold remaining field labels
     result = re.sub(r"Strongest source:", "**Strongest source:**", result)
     result = re.sub(r"\bGap:",            "**Gap:**",              result)
 
