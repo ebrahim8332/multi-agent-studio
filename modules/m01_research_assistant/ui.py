@@ -23,7 +23,7 @@ Token usage is accumulated in "m01_call_log" by the model chain.
 import streamlit as st
 from utils.model_client import get_chain, APPROX_PRICING
 from modules.m01_research_assistant.agents import (
-    run_planner, run_researcher, run_critic, run_writer, run_editor,
+    run_planner, run_researcher, run_critic, run_writer, run_judge, run_editor,
     flag_weak_questions, flag_irrelevant_questions,
 )
 from modules.m01_research_assistant.pipeline import get_initial_state
@@ -35,10 +35,12 @@ AGENTS = [
     ("researcher", "Agent 2: Researcher", "Searches the web for evidence on each question"),
     ("critic",     "Agent 3: Critic",     "Assesses source quality and flags gaps"),
     ("writer",     "Agent 4: Writer",     "Drafts the full research paper"),
-    ("editor",     "Agent 5: Editor",     "Polishes the draft and removes weak language"),
+    ("judge",      "Agent 5: Judge",      "Evaluates draft quality before the Editor runs"),
+    ("editor",     "Agent 6: Editor",     "Polishes the draft and removes weak language"),
 ]
 
 MAX_RESEARCHER_RETRIES = 2
+MAX_WRITER_RETRIES     = 2
 
 AUDIENCE_OPTIONS = [
     "General business audience",
@@ -83,6 +85,8 @@ _STATE_KEYS = [
     "m01_planner_model", "m01_planner_prompt", "m01_inputs", "m01_phase",
     "m01_flagged_questions", "m01_researcher_attempt",
     "m01_call_log",
+    "m01_writer_attempt", "m01_writer_feedback", "m01_judge_editing",
+    "m01_judge_result",
 ]
 
 
@@ -153,7 +157,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
     fk = st.session_state["m01_form_key"]
 
     phase  = st.session_state.get("m01_phase", "idle")
-    locked = phase in ("running", "critic_running", "writing")
+    locked = phase in ("running", "critic_running", "writing", "judge_running", "editor_running")
 
     # ── Input form ────────────────────────────────────────────────────────────
     topic = st.text_area(
@@ -213,6 +217,8 @@ div[data-baseweb="select"] * { cursor: pointer; }
     critic_ph       = st.empty()
     critic_gate_ph  = st.empty()   # checkpoint between Critic and Writer
     writer_ph       = st.empty()
+    judge_ph        = st.empty()
+    judge_gate_ph   = st.empty()   # checkpoint between Judge and Editor
     editor_ph       = st.empty()
 
     ph = {
@@ -220,6 +226,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
         "researcher": researcher_ph,
         "critic":     critic_ph,
         "writer":     writer_ph,
+        "judge":      judge_ph,
         "editor":     editor_ph,
     }
 
@@ -585,20 +592,24 @@ div[data-baseweb="select"] * { cursor: pointer; }
         return
 
     # ══════════════════════════════════════════════════════════════════════════
-    # PHASE: writing  (Writer + Editor)
+    # PHASE: writing  (Writer only — then transitions to judge_running)
     # ══════════════════════════════════════════════════════════════════════════
     if phase == "writing":
-        pending         = st.session_state.get("m01_pending_state", {})
-        questions       = pending.get("questions", [])
-        p_model         = st.session_state.get("m01_planner_model", "")
-        p_prompt        = st.session_state.get("m01_planner_prompt", [])
-        planner_attempt = st.session_state.get("m01_planner_attempt", 1)
-        agent_outputs   = st.session_state.get("m01_agent_outputs", {})
+        pending          = st.session_state.get("m01_pending_state", {})
+        questions        = pending.get("questions", [])
+        p_model          = st.session_state.get("m01_planner_model", "")
+        p_prompt         = st.session_state.get("m01_planner_prompt", [])
+        planner_attempt  = st.session_state.get("m01_planner_attempt", 1)
+        agent_outputs    = st.session_state.get("m01_agent_outputs", {})
+        writer_feedback  = st.session_state.get("m01_writer_feedback", "")
+        writer_attempt   = st.session_state.get("m01_writer_attempt", 1)
 
-        attempt_note     = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
-        planner_out      = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-        researcher_out   = agent_outputs.get("researcher", {}).get("output", "")
-        researcher_model = agent_outputs.get("researcher", {}).get("model", "")
+        attempt_note      = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
+        w_attempt_note    = f" · re-draft {writer_attempt}" if writer_attempt > 1 else ""
+        planner_out       = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        researcher_out    = agent_outputs.get("researcher", {}).get("output", "")
+        researcher_model  = agent_outputs.get("researcher", {}).get("model", "")
+        researcher_prompt = agent_outputs.get("researcher", {}).get("prompt", [])
         critic_out    = agent_outputs.get("critic", {}).get("output", "")
         critic_model  = agent_outputs.get("critic", {}).get("model", "")
         critic_prompt = agent_outputs.get("critic", {}).get("prompt", [])
@@ -611,47 +622,283 @@ div[data-baseweb="select"] * { cursor: pointer; }
         approval_ph.empty()
         _agent_panel(researcher_ph, "Agent 2: Researcher",
                      "Searches the web for evidence on each question",
-                     STATUS_COMPLETE, output=researcher_out, model=researcher_model)
+                     STATUS_COMPLETE, output=researcher_out, model=researcher_model,
+                     prompt=researcher_prompt)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
                      STATUS_COMPLETE, output=critic_out, model=critic_model, prompt=critic_prompt)
         critic_gate_ph.empty()
-        _agent_panel(writer_ph, "Agent 4: Writer", "Drafting the research paper",
+        _agent_panel(writer_ph, "Agent 4: Writer",
+                     f"Drafting the research paper{w_attempt_note}",
                      STATUS_RUNNING, running=True)
-        _agent_panel(editor_ph, "Agent 5: Editor",
+        _agent_panel(judge_ph,  "Agent 5: Judge",
+                     "Evaluates draft quality before the Editor runs", STATUS_WAITING)
+        _agent_panel(editor_ph, "Agent 6: Editor",
+                     "Polishes the draft and removes weak language",   STATUS_WAITING)
+
+        try:
+            with st.spinner("Writing the research paper... (this can take 30–60 seconds)"):
+                result = run_writer(full_state, chain, user_feedback=writer_feedback)
+            full_state.update(result)
+        except Exception as e:
+            _agent_panel(writer_ph, "Agent 4: Writer", "", STATUS_FAILED)
+            _agent_panel(judge_ph,  "Agent 5: Judge",  "", STATUS_FAILED)
+            _agent_panel(editor_ph, "Agent 6: Editor", "", STATUS_FAILED)
+            st.error(f"Writer failed: {e}")
+            return
+
+        writer_out    = _format_agent_output("writer", result, full_state)
+        writer_model  = result.get("model_used", "")
+        writer_prompt = result.get("prompt_sent", [])
+        agent_outputs["writer"] = {"output": writer_out, "model": writer_model + w_attempt_note,
+                                   "prompt": writer_prompt}
+
+        st.session_state["m01_pending_state"]   = full_state
+        st.session_state["m01_agent_outputs"]   = agent_outputs
+        st.session_state["m01_writer_feedback"] = ""   # clear after use
+        st.session_state["m01_phase"] = "judge_running"
+        st.rerun()
+        return
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE: judge_running
+    # ══════════════════════════════════════════════════════════════════════════
+    if phase == "judge_running":
+        pending          = st.session_state.get("m01_pending_state", {})
+        questions        = pending.get("questions", [])
+        p_model          = st.session_state.get("m01_planner_model", "")
+        p_prompt         = st.session_state.get("m01_planner_prompt", [])
+        planner_attempt  = st.session_state.get("m01_planner_attempt", 1)
+        agent_outputs    = st.session_state.get("m01_agent_outputs", {})
+        writer_attempt   = st.session_state.get("m01_writer_attempt", 1)
+
+        attempt_note     = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
+        planner_out      = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        researcher_out   = agent_outputs.get("researcher", {}).get("output", "")
+        researcher_model = agent_outputs.get("researcher", {}).get("model", "")
+        researcher_prompt = agent_outputs.get("researcher", {}).get("prompt", [])
+        critic_out    = agent_outputs.get("critic", {}).get("output", "")
+        critic_model  = agent_outputs.get("critic", {}).get("model", "")
+        critic_prompt = agent_outputs.get("critic", {}).get("prompt", [])
+        writer_out    = agent_outputs.get("writer", {}).get("output", "")
+        writer_model  = agent_outputs.get("writer", {}).get("model", "")
+        writer_prompt = agent_outputs.get("writer", {}).get("prompt", [])
+        full_state = dict(pending)
+        chain = get_chain(st.session_state)
+
+        _agent_panel(planner_ph, "Agent 1: Planner",
+                     "Breaks the topic into focused research questions",
+                     STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
+        approval_ph.empty()
+        _agent_panel(researcher_ph, "Agent 2: Researcher",
+                     "Searches the web for evidence on each question",
+                     STATUS_COMPLETE, output=researcher_out, model=researcher_model,
+                     prompt=researcher_prompt)
+        quality_gate_ph.empty()
+        _agent_panel(critic_ph, "Agent 3: Critic",
+                     "Assesses source quality and flags gaps",
+                     STATUS_COMPLETE, output=critic_out, model=critic_model, prompt=critic_prompt)
+        critic_gate_ph.empty()
+        _agent_panel(writer_ph, "Agent 4: Writer",
+                     "Drafts the full research paper",
+                     STATUS_COMPLETE, output=writer_out, model=writer_model, prompt=writer_prompt)
+        _agent_panel(judge_ph, "Agent 5: Judge",
+                     "Evaluating draft quality...", STATUS_RUNNING, running=True)
+        _agent_panel(editor_ph, "Agent 6: Editor",
                      "Polishes the draft and removes weak language", STATUS_WAITING)
 
-        agents_to_run = [
-            ("writer", lambda: run_writer(full_state, chain),
-             "Agent 4: Writer", "Drafts the full research paper"),
-            ("editor", lambda: run_editor(full_state, chain),
-             "Agent 5: Editor", "Polishes the draft and removes weak language"),
-        ]
-
-        current_index = 0
         try:
-            for agent_name, agent_fn, label, desc in agents_to_run:
-                result = agent_fn()
-                full_state.update(result)
-                output = _format_agent_output(agent_name, result, full_state)
-                model  = result.get("model_used", "")
-                prompt = result.get("prompt_sent", [])
-                agent_outputs[agent_name] = {"output": output, "model": model, "prompt": prompt}
-                _agent_panel(ph[agent_name], label, desc,
-                             STATUS_COMPLETE, output=output, model=model,
-                             expanded=True, prompt=prompt)
-                current_index += 1
-                if current_index < len(agents_to_run):
-                    _, _, next_label, next_desc = agents_to_run[current_index]
-                    _agent_panel(ph[agents_to_run[current_index][0]],
-                                 next_label, next_desc, STATUS_RUNNING, running=True)
+            with st.spinner("Evaluating draft quality..."):
+                result = run_judge(full_state, chain)
         except Exception as e:
-            for i in range(current_index, len(agents_to_run)):
-                fail_name, _, fail_label, fail_desc = agents_to_run[i]
-                _agent_panel(ph[fail_name], fail_label, fail_desc, STATUS_FAILED)
-            st.error(f"Pipeline stopped: {e}")
+            _agent_panel(judge_ph,  "Agent 5: Judge",  "", STATUS_FAILED)
+            _agent_panel(editor_ph, "Agent 6: Editor", "", STATUS_FAILED)
+            st.error(f"Judge failed: {e}")
             return
+
+        judge_out    = _format_judge_output(result)
+        judge_model  = result.get("model_used", "")
+        judge_prompt = result.get("prompt_sent", [])
+        agent_outputs["judge"] = {"output": judge_out, "model": judge_model, "prompt": judge_prompt}
+
+        st.session_state["m01_judge_result"]   = result
+        st.session_state["m01_agent_outputs"]  = agent_outputs
+        st.session_state["m01_phase"] = "judge_done"
+        st.rerun()
+        return
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE: judge_done  (Judge checkpoint)
+    # ══════════════════════════════════════════════════════════════════════════
+    if phase == "judge_done":
+        pending          = st.session_state.get("m01_pending_state", {})
+        questions        = pending.get("questions", [])
+        p_model          = st.session_state.get("m01_planner_model", "")
+        p_prompt         = st.session_state.get("m01_planner_prompt", [])
+        planner_attempt  = st.session_state.get("m01_planner_attempt", 1)
+        agent_outputs    = st.session_state.get("m01_agent_outputs", {})
+        judge_result     = st.session_state.get("m01_judge_result", {})
+        writer_attempt   = st.session_state.get("m01_writer_attempt", 1)
+        judge_editing    = st.session_state.get("m01_judge_editing", False)
+
+        attempt_note     = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
+        planner_out      = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        researcher_out   = agent_outputs.get("researcher", {}).get("output", "")
+        researcher_model = agent_outputs.get("researcher", {}).get("model", "")
+        researcher_prompt = agent_outputs.get("researcher", {}).get("prompt", [])
+        critic_out    = agent_outputs.get("critic",   {}).get("output", "")
+        critic_model  = agent_outputs.get("critic",   {}).get("model",  "")
+        critic_prompt = agent_outputs.get("critic",   {}).get("prompt", [])
+        writer_out    = agent_outputs.get("writer",   {}).get("output", "")
+        writer_model  = agent_outputs.get("writer",   {}).get("model",  "")
+        writer_prompt = agent_outputs.get("writer",   {}).get("prompt", [])
+        judge_out     = agent_outputs.get("judge",    {}).get("output", "")
+        judge_model   = agent_outputs.get("judge",    {}).get("model",  "")
+        judge_prompt  = agent_outputs.get("judge",    {}).get("prompt", [])
+        flagged       = judge_result.get("flagged", False)
+
+        _agent_panel(planner_ph, "Agent 1: Planner",
+                     "Breaks the topic into focused research questions",
+                     STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
+        approval_ph.empty()
+        _agent_panel(researcher_ph, "Agent 2: Researcher",
+                     "Searches the web for evidence on each question",
+                     STATUS_COMPLETE, output=researcher_out, model=researcher_model,
+                     prompt=researcher_prompt)
+        quality_gate_ph.empty()
+        _agent_panel(critic_ph, "Agent 3: Critic",
+                     "Assesses source quality and flags gaps",
+                     STATUS_COMPLETE, output=critic_out, model=critic_model, prompt=critic_prompt)
+        critic_gate_ph.empty()
+        _agent_panel(writer_ph, "Agent 4: Writer",
+                     "Drafts the full research paper",
+                     STATUS_COMPLETE, output=writer_out, model=writer_model, prompt=writer_prompt)
+        _agent_panel(judge_ph, "Agent 5: Judge",
+                     "Evaluates draft quality before the Editor runs",
+                     STATUS_COMPLETE, output=judge_out, model=judge_model,
+                     expanded=True, prompt=judge_prompt)
+
+        with judge_gate_ph.container():
+            if flagged:
+                st.warning("The Judge flagged quality concerns. Review the scores above before continuing.")
+            else:
+                st.success("The Judge rated the draft acceptable on all dimensions.")
+            _show_judge_scorecard(judge_result)
+
+            can_redraft = writer_attempt <= MAX_WRITER_RETRIES
+            if not judge_editing:
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button("Proceed to Editor →", type="primary"):
+                        judge_gate_ph.empty()
+                        st.session_state["m01_phase"] = "editor_running"
+                        st.rerun()
+                with col2:
+                    redraft_label = "Re-draft with feedback" if can_redraft else f"Re-draft (max {MAX_WRITER_RETRIES} reached)"
+                    if st.button(redraft_label, disabled=not can_redraft):
+                        st.session_state["m01_judge_editing"] = True
+                        st.rerun()
+                with col3:
+                    if st.button("Stop here"):
+                        for key in _STATE_KEYS:
+                            st.session_state.pop(key, None)
+                        st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
+                        st.rerun()
+                st.caption("The Editor will not start until you approve.")
+            else:
+                st.markdown("**What should the Writer fix?** Be specific — the Writer will use your note.")
+                st.text_area(
+                    "Feedback for re-draft", height=120,
+                    key="m01_writer_feedback_input",
+                    label_visibility="collapsed",
+                )
+                col1, col2 = st.columns([1, 1])
+                with col1:
+                    if st.button("Submit and re-draft →", type="primary"):
+                        feedback = st.session_state.get("m01_writer_feedback_input", "")
+                        st.session_state["m01_writer_feedback"] = feedback
+                        st.session_state["m01_writer_attempt"]  = writer_attempt + 1
+                        st.session_state["m01_judge_editing"]   = False
+                        st.session_state["m01_phase"] = "writing"
+                        st.rerun()
+                with col2:
+                    if st.button("Cancel"):
+                        st.session_state["m01_judge_editing"] = False
+                        st.rerun()
+
+        _agent_panel(editor_ph, "Agent 6: Editor",
+                     "Polishes the draft and removes weak language", STATUS_WAITING)
+        return
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE: editor_running
+    # ══════════════════════════════════════════════════════════════════════════
+    if phase == "editor_running":
+        pending          = st.session_state.get("m01_pending_state", {})
+        questions        = pending.get("questions", [])
+        p_model          = st.session_state.get("m01_planner_model", "")
+        p_prompt         = st.session_state.get("m01_planner_prompt", [])
+        planner_attempt  = st.session_state.get("m01_planner_attempt", 1)
+        agent_outputs    = st.session_state.get("m01_agent_outputs", {})
+
+        attempt_note     = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
+        planner_out      = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        researcher_out   = agent_outputs.get("researcher", {}).get("output", "")
+        researcher_model = agent_outputs.get("researcher", {}).get("model", "")
+        researcher_prompt = agent_outputs.get("researcher", {}).get("prompt", [])
+        critic_out    = agent_outputs.get("critic", {}).get("output", "")
+        critic_model  = agent_outputs.get("critic", {}).get("model",  "")
+        critic_prompt = agent_outputs.get("critic", {}).get("prompt", [])
+        writer_out    = agent_outputs.get("writer", {}).get("output", "")
+        writer_model  = agent_outputs.get("writer", {}).get("model",  "")
+        writer_prompt = agent_outputs.get("writer", {}).get("prompt", [])
+        judge_out     = agent_outputs.get("judge",  {}).get("output", "")
+        judge_model   = agent_outputs.get("judge",  {}).get("model",  "")
+        judge_prompt  = agent_outputs.get("judge",  {}).get("prompt", [])
+        full_state = dict(pending)
+        chain = get_chain(st.session_state)
+
+        _agent_panel(planner_ph, "Agent 1: Planner",
+                     "Breaks the topic into focused research questions",
+                     STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
+        approval_ph.empty()
+        _agent_panel(researcher_ph, "Agent 2: Researcher",
+                     "Searches the web for evidence on each question",
+                     STATUS_COMPLETE, output=researcher_out, model=researcher_model,
+                     prompt=researcher_prompt)
+        quality_gate_ph.empty()
+        _agent_panel(critic_ph, "Agent 3: Critic",
+                     "Assesses source quality and flags gaps",
+                     STATUS_COMPLETE, output=critic_out, model=critic_model, prompt=critic_prompt)
+        critic_gate_ph.empty()
+        _agent_panel(writer_ph, "Agent 4: Writer",
+                     "Drafts the full research paper",
+                     STATUS_COMPLETE, output=writer_out, model=writer_model, prompt=writer_prompt)
+        judge_gate_ph.empty()
+        _agent_panel(judge_ph,  "Agent 5: Judge",
+                     "Evaluates draft quality before the Editor runs",
+                     STATUS_COMPLETE, output=judge_out, model=judge_model, prompt=judge_prompt)
+        _agent_panel(editor_ph, "Agent 6: Editor",
+                     "Polishing the draft", STATUS_RUNNING, running=True)
+
+        try:
+            with st.spinner("Polishing the draft..."):
+                result = run_editor(full_state, chain)
+            full_state.update(result)
+        except Exception as e:
+            _agent_panel(editor_ph, "Agent 6: Editor", "", STATUS_FAILED)
+            st.error(f"Editor failed: {e}")
+            return
+
+        editor_out    = _format_agent_output("editor", result, full_state)
+        editor_model  = result.get("model_used", "")
+        editor_prompt = result.get("prompt_sent", [])
+        agent_outputs["editor"] = {"output": editor_out, "model": editor_model, "prompt": editor_prompt}
+        _agent_panel(editor_ph, "Agent 6: Editor",
+                     "Polishes the draft and removes weak language",
+                     STATUS_COMPLETE, output=editor_out, model=editor_model,
+                     expanded=True, prompt=editor_prompt)
 
         st.session_state["m01_final"]         = full_state.get("final", "")
         st.session_state["m01_full_state"]    = full_state
@@ -717,13 +964,17 @@ def _start_planner(topic, angle, audience, format_style, length, planner_ph) -> 
     pending = dict(state)
     pending.update(result)
 
-    st.session_state["m01_pending_state"]  = pending
-    st.session_state["m01_planner_model"]  = result.get("model_used", "")
-    st.session_state["m01_planner_prompt"] = result.get("prompt_sent", [])
+    st.session_state["m01_pending_state"]   = pending
+    st.session_state["m01_planner_model"]   = result.get("model_used", "")
+    st.session_state["m01_planner_prompt"]  = result.get("prompt_sent", [])
     st.session_state["m01_planner_attempt"] = 1
-    st.session_state["m01_editing"]        = False
-    st.session_state["m01_agent_outputs"]  = {}
-    st.session_state["m01_phase"]          = "planner_done"
+    st.session_state["m01_editing"]         = False
+    st.session_state["m01_agent_outputs"]   = {}
+    st.session_state["m01_writer_attempt"]  = 1
+    st.session_state["m01_writer_feedback"] = ""
+    st.session_state["m01_judge_editing"]   = False
+    st.session_state["m01_judge_result"]    = {}
+    st.session_state["m01_phase"]           = "planner_done"
     st.rerun()
 
 
@@ -747,6 +998,77 @@ def _format_agent_output(node_name: str, result: dict, full_state: dict) -> str:
     elif node_name == "editor":
         return result.get("final", "")
     return ""
+
+
+def _format_judge_output(result: dict) -> str:
+    """Plain-text summary of Judge results for the agent panel output expander."""
+    rule  = result.get("rule_check", {})
+    scores = result.get("scores", {})
+    lines = []
+    wc_ok  = "✅" if rule.get("word_count_ok") else "❌"
+    sec_ok = "✅" if rule.get("sections_ok") else "❌"
+    lines.append(
+        f"{wc_ok} Word count: {rule.get('word_count', 0):,} "
+        f"(target {rule.get('word_count_target', 0):,})"
+    )
+    lines.append(
+        f"{sec_ok} Sections: {rule.get('section_count', 0)} "
+        f"(min {rule.get('min_sections', 0)})"
+    )
+    lines.append("")
+    dim_labels = {
+        "completeness": "Completeness",
+        "argument_quality": "Argument quality",
+        "source_integration": "Source integration",
+        "format_adherence": "Format adherence",
+    }
+    for key, label in dim_labels.items():
+        s = scores.get(key, {})
+        score = s.get("score", 0)
+        note  = s.get("note", "")
+        icon  = "🟢" if score >= 4 else ("🟡" if score == 3 else "🔴")
+        lines.append(f"{icon} {label}: {score}/5 — {note}")
+    flagged = result.get("flagged", False)
+    lines.append("")
+    lines.append("⚠️ Flagged for review." if flagged else "✅ Draft passed quality check.")
+    return "\n".join(lines)
+
+
+def _show_judge_scorecard(result: dict) -> None:
+    """Renders the Judge scorecard using st.progress bars."""
+    rule   = result.get("rule_check", {})
+    scores = result.get("scores", {})
+
+    st.markdown("**Rule check**")
+    wc_ok  = rule.get("word_count_ok", True)
+    sec_ok = rule.get("sections_ok", True)
+    col1, col2 = st.columns(2)
+    with col1:
+        icon = "✅" if wc_ok else "❌"
+        st.caption(f"{icon} Words: {rule.get('word_count', 0):,} / {rule.get('word_count_target', 0):,} target")
+    with col2:
+        icon = "✅" if sec_ok else "❌"
+        st.caption(f"{icon} Sections: {rule.get('section_count', 0)} / {rule.get('min_sections', 0)} minimum")
+
+    st.markdown("**Quality scores** (1 = poor · 3 = acceptable · 5 = excellent)")
+    dim_labels = {
+        "completeness":       "Completeness",
+        "argument_quality":   "Argument quality",
+        "source_integration": "Source integration",
+        "format_adherence":   "Format adherence",
+    }
+    for key, label in dim_labels.items():
+        s     = scores.get(key, {})
+        score = s.get("score", 3)
+        note  = s.get("note", "")
+        icon  = "🟢" if score >= 4 else ("🟡" if score == 3 else "🔴")
+        col_label, col_bar = st.columns([1, 2])
+        with col_label:
+            st.caption(f"{icon} {label}: **{score}/5**")
+        with col_bar:
+            st.progress(score / 5)
+        if note:
+            st.caption(f"   {note}")
 
 
 def _show_sources() -> None:

@@ -11,6 +11,20 @@ LangGraph merges it back into the full state before passing to the next node.
 import re
 from utils.search_client import get_search_chain
 
+# Word count targets for Judge rule check: {length_string: (target_words, min_acceptable)}
+LENGTH_WORD_TARGETS = {
+    "Short brief (~800 words, 1-2 pages)":       (800,  400),
+    "Standard length (~2,000 words, 4-5 pages)": (2000, 1000),
+    "Full report (~4,500 words, 9-11 pages)":    (4500, 2000),
+}
+
+# Minimum section headings expected for each length
+LENGTH_SECTION_TARGETS = {
+    "Short brief (~800 words, 1-2 pages)":       2,
+    "Standard length (~2,000 words, 4-5 pages)": 3,
+    "Full report (~4,500 words, 9-11 pages)":    4,
+}
+
 # Domains that are never useful as research sources.
 # Used by flag_weak_questions() to detect low-quality results objectively.
 LOW_AUTHORITY_DOMAINS = {
@@ -392,10 +406,11 @@ def run_critic(state: dict, chain) -> dict:
 
 # ── Agent 4: Writer ───────────────────────────────────────────────────────────
 
-def run_writer(state: dict, chain) -> dict:
+def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
     """
     Writes a structured research paper from the gathered evidence.
-    Returns: draft (str), model_used (str)
+    If user_feedback is provided (re-draft), the feedback is injected as a correction note.
+    Returns: draft (str), title (str), model_used (str)
     """
     topic        = state["topic"]
     questions    = state["questions"]
@@ -441,7 +456,13 @@ def run_writer(state: dict, chain) -> dict:
                 f"Format instructions:\n{format_instructions}\n\n"
                 f"Evidence gathered:\n{evidence_text}\n\n"
                 f"Source quality assessment:\n{critique}\n\n"
-                "Begin your response with a single line in this exact format:\n"
+                + (
+                    f"\n\nIMPORTANT — RE-DRAFT: A previous draft was reviewed and found lacking. "
+                    f"The reviewer's feedback:\n{user_feedback}\n\n"
+                    f"Address all feedback points in this new draft."
+                    if user_feedback else ""
+                ) +
+                "\n\nBegin your response with a single line in this exact format:\n"
                 "TITLE: [a short, professional title for this paper — 8 words or fewer]\n\n"
                 "Then write the complete paper following the format instructions above exactly. "
                 "You must write ALL sections from start to finish without stopping early. "
@@ -471,7 +492,112 @@ def run_writer(state: dict, chain) -> dict:
     return {"draft": "\n".join(draft_lines), "title": paper_title, "model_used": model, "prompt_sent": messages}
 
 
-# ── Agent 5: Editor ───────────────────────────────────────────────────────────
+# ── Agent 5: Judge ────────────────────────────────────────────────────────────
+
+def run_judge(state: dict, chain) -> dict:
+    """
+    Evaluates the Writer's draft before it goes to the Editor.
+
+    Two-pass:
+      Pass 1 — rule check (free, instant): word count vs target, section heading count.
+      Pass 2 — LLM evaluation (one call): scores four dimensions 1–5 with a one-line note each.
+
+    Returns a structured result dict with rule_check, scores, flagged flag, and prompt_sent.
+    flagged is True if any score < 3 or if the rule check failed critically.
+    """
+    draft        = state.get("draft", "")
+    topic        = state.get("topic", "")
+    format_style = state.get("format_style", "White Paper / Analytical")
+    length       = state.get("length", "Standard length (~2,000 words, 4-5 pages)")
+    critique     = state.get("critique", "")
+
+    # ── Pass 1: Rule check ─────────────────────────────────────────────────────
+    words          = len(draft.split())
+    target_words, min_words = LENGTH_WORD_TARGETS.get(length, (2000, 1000))
+    word_count_ok  = words >= min_words
+
+    section_count  = sum(1 for line in draft.split("\n") if line.strip().startswith("#"))
+    min_sections   = LENGTH_SECTION_TARGETS.get(length, 3)
+    sections_ok    = section_count >= min_sections
+
+    rule_check = {
+        "word_count":        words,
+        "word_count_target": target_words,
+        "word_count_ok":     word_count_ok,
+        "section_count":     section_count,
+        "min_sections":      min_sections,
+        "sections_ok":       sections_ok,
+    }
+
+    # ── Pass 2: LLM evaluation ─────────────────────────────────────────────────
+    draft_preview = draft[:6000] + "\n\n[... truncated for evaluation ...]" if len(draft) > 6000 else draft
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a strict editorial quality evaluator. "
+                "Score a research paper draft on exactly four dimensions using a 1–5 scale "
+                "where 1 = very poor, 3 = acceptable, 5 = excellent. "
+                "Be critical. Reserve 5 for genuinely strong work. "
+                "Respond with exactly four lines — nothing else:\n"
+                "COMPLETENESS: [1-5] | [one sentence note]\n"
+                "ARGUMENT_QUALITY: [1-5] | [one sentence note]\n"
+                "SOURCE_INTEGRATION: [1-5] | [one sentence note]\n"
+                "FORMAT_ADHERENCE: [1-5] | [one sentence note]"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Topic: {topic}\n"
+                f"Target format: {format_style}\n"
+                f"Target length: {length}\n\n"
+                f"Critic's source assessment (for context):\n{critique[:800]}\n\n"
+                f"Draft to evaluate:\n{draft_preview}"
+            ),
+        },
+    ]
+
+    scores = {}
+    model  = ""
+    try:
+        response, model = chain.complete(messages, agent_label="Judge")
+        for line in response.strip().split("\n"):
+            line = line.strip()
+            m = re.match(
+                r"(COMPLETENESS|ARGUMENT_QUALITY|SOURCE_INTEGRATION|FORMAT_ADHERENCE)"
+                r":\s*([1-5])\s*\|(.+)", line, re.IGNORECASE,
+            )
+            if m:
+                key   = m.group(1).lower()
+                score = int(m.group(2))
+                note  = m.group(3).strip()
+                scores[key] = {"score": score, "note": note}
+    except Exception:
+        pass
+
+    # Fill any missing dimensions with a neutral placeholder
+    for dim in ("completeness", "argument_quality", "source_integration", "format_adherence"):
+        if dim not in scores:
+            scores[dim] = {"score": 3, "note": "Could not evaluate."}
+
+    flagged = (
+        not rule_check["word_count_ok"]
+        or not rule_check["sections_ok"]
+        or any(v["score"] < 3 for v in scores.values())
+    )
+
+    return {
+        "rule_check":  rule_check,
+        "scores":      scores,
+        "flagged":     flagged,
+        "model_used":  model,
+        "prompt_sent": messages,
+    }
+
+
+# ── Agent 6: Editor ───────────────────────────────────────────────────────────
 
 def run_editor(state: dict, chain) -> dict:
     """
