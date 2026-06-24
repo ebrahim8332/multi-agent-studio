@@ -977,9 +977,12 @@ div[data-baseweb="select"] * { cursor: pointer; }
                             st.rerun()
                 st.caption("The Editor will not start until you approve.")
             else:
-                st.markdown("**What should the Writer fix?** Be specific — the Writer will use your note.")
+                suggestion = _build_redraft_suggestion(judge_result)
+                st.markdown("**What should the Writer fix?**")
+                st.caption("Pre-filled from the Judge's findings — edit or use as-is.")
                 st.text_area(
-                    "Feedback for re-draft", height=120,
+                    "Feedback for re-draft", height=160,
+                    value=suggestion,
                     key="m01_writer_feedback_input",
                     label_visibility="collapsed",
                 )
@@ -1246,6 +1249,48 @@ def _show_judge_scorecard(result: dict) -> None:
             st.progress(score / 5)
         if note:
             st.caption(f"   {note}")
+
+
+def _build_redraft_suggestion(judge_result: dict) -> str:
+    """
+    Builds a pre-filled re-draft note from the Judge's findings.
+    Covers word count, section count, and any dimension scored below 4.
+    The Writer receives this as its correction instruction.
+    """
+    rule   = judge_result.get("rule_check", {})
+    scores = judge_result.get("scores", {})
+    dim_labels = {
+        "completeness":       "Completeness",
+        "argument_quality":   "Argument quality",
+        "source_integration": "Source integration",
+        "format_adherence":   "Format adherence",
+    }
+    notes = []
+
+    if not rule.get("word_count_ok", True):
+        actual = rule.get("word_count", 0)
+        target = rule.get("word_count_target", 0)
+        notes.append(
+            f"The paper is {actual:,} words — well below the {target:,} word target. "
+            "Expand every section with more depth, evidence, and analysis. Do not stop early."
+        )
+
+    if not rule.get("sections_ok", True):
+        actual  = rule.get("section_count", 0)
+        minimum = rule.get("min_sections", 0)
+        notes.append(
+            f"The paper has only {actual} section heading(s) — the minimum is {minimum}. "
+            "Add the missing sections."
+        )
+
+    for key, label in dim_labels.items():
+        s     = scores.get(key, {})
+        score = s.get("score", 5)
+        note  = s.get("note", "")
+        if score < 4 and note:
+            notes.append(f"{label} ({score}/5): {note}")
+
+    return "\n\n".join(notes)
 
 
 def _format_critic_output(critique: str) -> str:
