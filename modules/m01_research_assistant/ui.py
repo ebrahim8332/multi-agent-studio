@@ -615,62 +615,51 @@ div[data-baseweb="select"] * { cursor: pointer; }
             adequate_count = sum(1 for r in ratings if r == "Adequate")
             total          = len(ratings)
 
-            # Recommendation line — explicit proceed / review / stop guidance
+            # Single verdict box — situation + recommendation in one message
             if weak_count == 0:
-                # All Adequate — gaps exist but evidence is present
-                st.info(
-                    f"**{adequate_count} of {total} questions rated Adequate** — "
-                    "relevant sources found but some coverage is thin."
-                )
                 st.success(
-                    "**Recommendation: Proceed.** "
-                    "The Writer has enough evidence to work with. "
-                    "It will flag thin areas rather than invent facts."
+                    f"✅ **Verdict: Good to proceed.** "
+                    f"All {total} questions have relevant sources ({strong_count} strong, {adequate_count} adequate). "
+                    "The Writer has enough evidence. It will flag any thin areas rather than invent facts."
                 )
             elif weak_count <= total // 2:
-                # Minority of questions are Weak
                 st.warning(
-                    f"**{weak_count} of {total} question(s) have weak sources.** "
-                    "The Writer will note these gaps explicitly."
-                )
-                st.info(
-                    "**Recommendation: Proceed with caution.** "
-                    "The paper will have evidence gaps in the flagged areas. "
-                    "Acceptable if those gaps are not central to your topic."
+                    f"⚠️ **Verdict: Proceed with caution.** "
+                    f"{weak_count} of {total} question(s) have weak sources. "
+                    "The paper will have gaps in those areas. "
+                    "Fine to continue if those gaps are not central to your topic."
                 )
             else:
-                # Majority of questions are Weak — real problem
                 st.error(
-                    f"**{weak_count} of {total} questions have weak sources.** "
-                    "Most of the paper will lack solid evidence."
-                )
-                st.warning(
-                    "**Recommendation: Stop here and rethink the topic or questions.** "
-                    "Proceeding will produce a paper with mostly gaps and caveats."
+                    f"❌ **Verdict: Consider stopping.** "
+                    f"{weak_count} of {total} questions have weak sources. "
+                    "Proceeding will produce a paper that is mostly caveats. "
+                    "Consider stopping and refining the topic or questions."
                 )
 
             # Per-question table
             st.markdown("**Source quality by question:**")
             for entry in summary:
-                rating = entry["rating"]
-                icon   = "🟢" if rating == "Strong" else ("🟡" if rating == "Adequate" else "🔴")
-                q_text = entry["question"][:90] + ("..." if len(entry["question"]) > 90 else "")
-                gap    = entry["gap"]
-                best   = entry["source"]
+                rating   = entry["rating"]
+                icon     = "🟢" if rating == "Strong" else ("🟡" if rating == "Adequate" else "🔴")
+                q_text   = entry["question"][:85] + ("..." if len(entry["question"]) > 85 else "")
+                gap      = entry["gap"]
+                best     = entry["source"]
+                gap_text = (
+                    f"Best source: {best}" if rating == "Strong"
+                    else (f"Gap: {gap}" if gap and gap.lower() not in ("none", "none identified", "none.")
+                          else "No specific gap identified")
+                )
 
-                col_icon, col_q, col_gap = st.columns([0.5, 3, 3])
+                col_icon, col_rating, col_q, col_gap = st.columns([0.3, 1, 2.5, 3])
                 with col_icon:
-                    st.markdown(f"{icon} **{rating}**")
+                    st.markdown(icon)
+                with col_rating:
+                    st.caption(f"**{rating}**")
                 with col_q:
                     st.caption(q_text)
                 with col_gap:
-                    # Show gap for Weak and Adequate; show best source for Strong
-                    if rating == "Strong":
-                        st.caption(f"Best source: {best}")
-                    elif gap and gap.lower() not in ("none", "none identified", "none."):
-                        st.caption(f"Gap: {gap}")
-                    else:
-                        st.caption("No specific gap identified")
+                    st.caption(gap_text)
 
             st.markdown("")
             col1, col2 = st.columns([1, 1])
