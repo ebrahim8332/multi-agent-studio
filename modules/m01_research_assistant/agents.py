@@ -611,7 +611,8 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
                 "integrated analysis, not as a sequential answer to each question.\n"
                 "2. STRUCTURE — follow the format instructions above exactly.\n"
                 "3. HEADINGS — use ## for all top-level section headings, ### for subheadings. "
-                "Never use # (single hash) anywhere in the paper.\n"
+                "Never use # (single hash) anywhere in the paper. "
+                "Do NOT repeat the paper title as a heading — begin directly with the first section.\n"
                 f"4. LENGTH — write approximately {target_words:,} words. "
                 "You must write ALL sections from start to finish. Do not stop early.\n"
                 "5. SOURCES — where the Critic rated a source as Weak, use it as background "
@@ -835,7 +836,9 @@ def run_editor(state: dict, chain) -> dict:
                 "9. Confirm the topic and angle are maintained throughout — do not let the "
                 "paper drift to adjacent subjects\n"
                 + (f"10. Preserve the paper title exactly as given: \"{title}\" — "
-                   "do not change, shorten, or paraphrase it\n" if title else "")
+                   "do not change, shorten, or paraphrase it. "
+                   "Do NOT add the title as a heading at the top of your output — "
+                   "begin directly with the Executive Summary or first section heading.\n" if title else "")
                 + "\n"
                 "Return the complete edited paper from start to finish. "
                 "Do not stop mid-section. Do not summarise or skip sections."

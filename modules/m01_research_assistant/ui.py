@@ -166,11 +166,15 @@ def render() -> None:
     )
     st.markdown("---")
 
-    # Fix 1: pointer cursor on all selectbox dropdowns
     st.markdown("""
 <style>
 div[data-baseweb="select"] { cursor: pointer; }
 div[data-baseweb="select"] * { cursor: pointer; }
+
+/* Normalize heading sizes in paper output so h1/h2/h3 are not dramatically different */
+.stMarkdown h1 { font-size: 1.35rem !important; font-weight: 700 !important; margin-top: 1.2rem !important; }
+.stMarkdown h2 { font-size: 1.20rem !important; font-weight: 700 !important; margin-top: 1.0rem !important; }
+.stMarkdown h3 { font-size: 1.05rem !important; font-weight: 600 !important; margin-top: 0.8rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
