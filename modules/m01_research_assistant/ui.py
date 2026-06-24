@@ -940,14 +940,6 @@ div[data-baseweb="select"] * { cursor: pointer; }
             # Scorecard
             _show_judge_scorecard(judge_result)
 
-            # Specific notes for any dimension below 4
-            if low_dims:
-                st.markdown("**What the Judge said about the low-scoring dimensions:**")
-                for k, v in low_dims:
-                    score = v.get("score", 0)
-                    note  = v.get("note", "No note provided.")
-                    icon  = "🔴" if score < 3 else "🟡"
-                    st.caption(f"{icon} **{dim_names.get(k, k)} ({score}/5):** {note}")
 
             if not judge_editing:
                 if all_pass:
