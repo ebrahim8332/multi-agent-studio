@@ -1265,6 +1265,12 @@ def _format_critic_output(critique: str) -> str:
         if not block:
             continue
 
+        # Force each field onto its own line before any other formatting.
+        # The LLM often runs Rating / Strongest source / Gap together on one line.
+        block = re.sub(r"\s+(Rating:)",          r"\n\1",  block, flags=re.IGNORECASE)
+        block = re.sub(r"\s+(Strongest source:)", r"\n\1",  block, flags=re.IGNORECASE)
+        block = re.sub(r"\s+(Gap:)",              r"\n\1",  block, flags=re.IGNORECASE)
+
         # Make "Question N: ..." a bold subheading
         block = re.sub(
             r"^(Question\s+\d+:\s*.+)$",
