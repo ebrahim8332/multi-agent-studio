@@ -468,6 +468,8 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
                 "You must write ALL sections from start to finish without stopping early. "
                 "Do not stop mid-section or mid-sentence. "
                 "End only after you have written the Conclusions section. "
+                "Heading rules: use ## for all top-level section headings. "
+                "Use ### for any subheadings. Never use # (single hash) anywhere in the paper. "
                 "Hit the target length. Calibrate vocabulary and detail for the stated audience. "
                 "Where the Critic rated a source as Weak, treat it as background context only — do not build a key argument on it. "
                 "Where a research question had no sources found, name that gap explicitly in the paper rather than skipping it. "

@@ -132,7 +132,7 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
 
 def render() -> None:
     st.title("📝 Research Assistant")
-    st.caption("Five agents research, critique, write, and edit a structured paper.")
+    st.caption("Six agents research, critique, write, judge, and edit a structured paper.")
     st.markdown(
         "Five specialized AI agents run in sequence — an **agent pipeline** where each agent "
         "builds on the work of the one before it.\n\n"
@@ -1002,36 +1002,38 @@ def _format_agent_output(node_name: str, result: dict, full_state: dict) -> str:
 
 def _format_judge_output(result: dict) -> str:
     """Plain-text summary of Judge results for the agent panel output expander."""
-    rule  = result.get("rule_check", {})
+    rule   = result.get("rule_check", {})
     scores = result.get("scores", {})
-    lines = []
+
     wc_ok  = "✅" if rule.get("word_count_ok") else "❌"
     sec_ok = "✅" if rule.get("sections_ok") else "❌"
-    lines.append(
-        f"{wc_ok} Word count: {rule.get('word_count', 0):,} "
-        f"(target {rule.get('word_count_target', 0):,})"
-    )
-    lines.append(
-        f"{sec_ok} Sections: {rule.get('section_count', 0)} "
-        f"(min {rule.get('min_sections', 0)})"
-    )
-    lines.append("")
+
     dim_labels = {
-        "completeness": "Completeness",
-        "argument_quality": "Argument quality",
+        "completeness":       "Completeness",
+        "argument_quality":   "Argument quality",
         "source_integration": "Source integration",
-        "format_adherence": "Format adherence",
+        "format_adherence":   "Format adherence",
     }
+
+    parts = [
+        "**Rule check**",
+        f"{wc_ok} Word count: {rule.get('word_count', 0):,} (target {rule.get('word_count_target', 0):,})",
+        f"{sec_ok} Sections: {rule.get('section_count', 0)} (min {rule.get('min_sections', 0)})",
+        "",
+        "**Quality scores**",
+    ]
     for key, label in dim_labels.items():
-        s = scores.get(key, {})
+        s     = scores.get(key, {})
         score = s.get("score", 0)
         note  = s.get("note", "")
         icon  = "🟢" if score >= 4 else ("🟡" if score == 3 else "🔴")
-        lines.append(f"{icon} {label}: {score}/5 — {note}")
+        parts.append(f"{icon} {label}: {score}/5 — {note}")
+
     flagged = result.get("flagged", False)
-    lines.append("")
-    lines.append("⚠️ Flagged for review." if flagged else "✅ Draft passed quality check.")
-    return "\n".join(lines)
+    parts.append("")
+    parts.append("⚠️ Flagged for review." if flagged else "✅ Draft passed quality check.")
+
+    return "\n\n".join(p for p in parts)
 
 
 def _show_judge_scorecard(result: dict) -> None:
@@ -1107,6 +1109,8 @@ def _show_run_summary() -> None:
         f"📊 Run summary — {len(log)} LLM call(s) · {total_tokens:,} tokens · {cost_str}",
         expanded=False,
     ):
+        writer_attempt  = st.session_state.get("m01_writer_attempt", 1)
+        planner_attempt = st.session_state.get("m01_planner_attempt", 1)
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("LLM calls", len(log))
@@ -1114,6 +1118,13 @@ def _show_run_summary() -> None:
             st.metric("Total tokens", f"{total_tokens:,}")
         with col3:
             st.metric("Est. cost (USD)", cost_str)
+        notes = []
+        if planner_attempt > 1:
+            notes.append(f"Planner replanned {planner_attempt - 1}× (user edits)")
+        if writer_attempt > 1:
+            notes.append(f"Writer re-drafted {writer_attempt - 1}× (Judge feedback)")
+        if notes:
+            st.caption(" · ".join(notes))
 
         st.caption(f"Input: {total_input:,} tokens · Output: {total_output:,} tokens")
         st.caption(
