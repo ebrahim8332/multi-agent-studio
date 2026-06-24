@@ -876,50 +876,41 @@ div[data-baseweb="select"] * { cursor: pointer; }
             and all(v.get("score", 0) >= 4 for v in scores.values())
         )
 
-        if all_pass and not judge_editing:
-            # All dimensions ≥ 4 and rule checks pass — no human decision needed
-            judge_gate_ph.empty()
-            st.session_state["m01_phase"] = "editor_running"
-            st.rerun()
-            return
-
         with judge_gate_ph.container():
             can_redraft = writer_attempt <= MAX_WRITER_RETRIES
 
-            # Recommendation line
-            low_dims = [
-                (k, v) for k, v in scores.items() if v.get("score", 5) < 4
-            ]
+            low_dims  = [(k, v) for k, v in scores.items() if v.get("score", 5) < 4]
             rule_fail = not rule.get("word_count_ok", True) or not rule.get("sections_ok", True)
+            dim_names = {
+                "completeness": "Completeness", "argument_quality": "Argument quality",
+                "source_integration": "Source integration", "format_adherence": "Format adherence",
+            }
 
-            if rule_fail or low_dims:
+            # Verdict box — one clear message regardless of outcome
+            if all_pass:
+                st.success(
+                    "✅ **Verdict: Proceed.** "
+                    "The draft passed all quality checks. "
+                    "The Editor will polish the language and confirm the format."
+                )
+            elif rule_fail or low_dims:
                 issues = []
                 if not rule.get("word_count_ok", True):
                     issues.append(f"word count short ({rule.get('word_count', 0):,} vs {rule.get('word_count_target', 0):,} target)")
                 if not rule.get("sections_ok", True):
                     issues.append(f"too few sections ({rule.get('section_count', 0)} vs {rule.get('min_sections', 0)} minimum)")
-                dim_names = {
-                    "completeness": "Completeness", "argument_quality": "Argument quality",
-                    "source_integration": "Source integration", "format_adherence": "Format adherence",
-                }
                 for k, v in low_dims:
-                    score = v.get("score", 0)
-                    issues.append(f"{dim_names.get(k, k)} scored {score}/5")
-                rec = "**Issues found:** " + ", ".join(issues) + ". "
-                rec += "You can proceed anyway or re-draft with specific feedback."
-                st.warning(rec)
-            else:
-                st.success("The Judge rated the draft acceptable on all dimensions.")
+                    issues.append(f"{dim_names.get(k, k)} scored {v.get('score', 0)}/5")
+                st.warning(
+                    "⚠️ **Verdict: Issues found — ** " + ", ".join(issues) + ". "
+                    "You can proceed anyway or re-draft with specific feedback."
+                )
 
             # Scorecard
             _show_judge_scorecard(judge_result)
 
-            # Highlight specific notes for any dimension below 4
+            # Specific notes for any dimension below 4
             if low_dims:
-                dim_names = {
-                    "completeness": "Completeness", "argument_quality": "Argument quality",
-                    "source_integration": "Source integration", "format_adherence": "Format adherence",
-                }
                 st.markdown("**What the Judge said about the low-scoring dimensions:**")
                 for k, v in low_dims:
                     score = v.get("score", 0)
@@ -928,23 +919,31 @@ div[data-baseweb="select"] * { cursor: pointer; }
                     st.caption(f"{icon} **{dim_names.get(k, k)} ({score}/5):** {note}")
 
             if not judge_editing:
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    if st.button("Proceed to Editor →", type="primary"):
+                if all_pass:
+                    # Clean run — one button only
+                    if st.button("Continue to Editor →", type="primary"):
                         judge_gate_ph.empty()
                         st.session_state["m01_phase"] = "editor_running"
                         st.rerun()
-                with col2:
-                    redraft_label = "Re-draft with feedback" if can_redraft else f"Re-draft (max {MAX_WRITER_RETRIES} reached)"
-                    if st.button(redraft_label, disabled=not can_redraft):
-                        st.session_state["m01_judge_editing"] = True
-                        st.rerun()
-                with col3:
-                    if st.button("Stop here"):
-                        for key in _STATE_KEYS:
-                            st.session_state.pop(key, None)
-                        st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
-                        st.rerun()
+                else:
+                    # Issues found — three options
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if st.button("Proceed to Editor →", type="primary"):
+                            judge_gate_ph.empty()
+                            st.session_state["m01_phase"] = "editor_running"
+                            st.rerun()
+                    with col2:
+                        redraft_label = "Re-draft with feedback" if can_redraft else f"Re-draft (max {MAX_WRITER_RETRIES} reached)"
+                        if st.button(redraft_label, disabled=not can_redraft):
+                            st.session_state["m01_judge_editing"] = True
+                            st.rerun()
+                    with col3:
+                        if st.button("Stop here"):
+                            for key in _STATE_KEYS:
+                                st.session_state.pop(key, None)
+                            st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
+                            st.rerun()
                 st.caption("The Editor will not start until you approve.")
             else:
                 st.markdown("**What should the Writer fix?** Be specific — the Writer will use your note.")
