@@ -33,6 +33,70 @@ LOW_AUTHORITY_DOMAINS = {
     "reddit.com", "quora.com", "pinterest.com", "medium.com",
 }
 
+# Format-specific question guidance injected into the Planner prompt.
+# Tells the Planner what KIND of questions suit each output format.
+FORMAT_QUESTION_GUIDANCE = {
+    "White Paper / Analytical": (
+        "The output is an analytical white paper. Questions should uncover mechanisms, causes, "
+        "trends, and implications. Avoid questions framed as 'what should we do' — focus on "
+        "'what is happening', 'why', and 'what does the evidence show'."
+    ),
+    "McKinsey / Bain": (
+        "The output is a consulting deliverable. Questions should cover: current state and scale "
+        "of the problem, root causes, options or approaches being used, evidence on what works, "
+        "and implementation considerations. Frame questions toward decisions and recommendations."
+    ),
+    "Harvard Business Review": (
+        "The output is a business article. Questions should uncover real-world examples, "
+        "practitioner perspectives, research findings, and practical lessons. Mix strategic "
+        "framing with concrete case evidence."
+    ),
+    "Academic / Research paper": (
+        "The output is an academic paper. Questions should cover: existing literature and prior "
+        "research, methodology debates, empirical findings, limitations of current knowledge, "
+        "and areas of scholarly consensus vs. disagreement."
+    ),
+    "Government / Policy brief": (
+        "The output is a policy brief. Questions should cover: scope and scale of the issue, "
+        "current policy landscape, evidence on interventions, trade-offs between options, "
+        "and implementation or feasibility considerations."
+    ),
+    "Consulting one-pager": (
+        "The output is a compressed executive summary. Questions should focus on the single "
+        "most important facts, one key insight per area, and what a senior executive needs "
+        "to decide or act. Prioritise signal over breadth."
+    ),
+}
+
+# Format-specific source quality criteria injected into the Critic prompt.
+# Tells the Critic what 'good sources' look like for each format.
+FORMAT_SOURCE_CRITERIA = {
+    "White Paper / Analytical": (
+        "Good sources: research institutions, think tanks, government data, peer-reviewed studies, "
+        "reputable journalism. Weak sources: opinion pieces without data, vendor marketing, social media."
+    ),
+    "McKinsey / Bain": (
+        "Good sources: industry reports, consulting firm research, credible business press "
+        "(FT, WSJ, HBR), company filings, analyst reports. Weak sources: blog posts, general news."
+    ),
+    "Harvard Business Review": (
+        "Good sources: business press, academic research with practical findings, case studies, "
+        "executive interviews, industry data. Weak sources: unsourced claims, pure opinion."
+    ),
+    "Academic / Research paper": (
+        "Good sources: peer-reviewed journals, academic preprints, conference papers, "
+        "institutional research. Weak sources: anything not peer-reviewed or not citing primary data."
+    ),
+    "Government / Policy brief": (
+        "Good sources: government reports, international organisation data (UN, OECD, World Bank), "
+        "academic policy research, legislative records. Weak sources: advocacy material, lobbying content."
+    ),
+    "Consulting one-pager": (
+        "Good sources: current industry data (within 2 years), credible business press, "
+        "proprietary research. Weak sources: outdated statistics, generic overviews."
+    ),
+}
+
 # Format-specific structure instructions injected into the Writer prompt.
 FORMAT_INSTRUCTIONS = {
     "White Paper / Analytical": (
@@ -112,23 +176,25 @@ def run_planner(state: dict, chain, user_edits: str = "") -> dict:
     """
     Breaks the topic into focused research questions.
     Question count scales to the selected length.
-    Audience shapes vocabulary only — subject matter stays exactly as given.
+    Format style shapes the type of questions — not just vocabulary.
     If user_edits is provided, the Planner uses them as a correction signal and replans.
     Returns: questions (list), model_used (str)
     """
-    topic    = state["topic"]
-    audience = state.get("audience", "General business audience")
-    angle    = state.get("angle", "")
-    length   = state.get("length", "Standard length (~2,000 words, 4-5 pages)")
+    topic        = state["topic"]
+    audience     = state.get("audience", "General business audience")
+    angle        = state.get("angle", "")
+    length       = state.get("length", "Standard length (~2,000 words, 4-5 pages)")
+    format_style = state.get("format_style", "White Paper / Analytical")
 
     q_min, q_max = _question_count(length)
 
+    format_guidance = FORMAT_QUESTION_GUIDANCE.get(format_style, "")
+
     angle_instruction = (
-        f"Focus the questions specifically on this angle: {angle}\n"
+        f"Specific angle to focus on: {angle}\n"
         if angle else ""
     )
 
-    # When the user has edited the previous questions, pass their intent back to the LLM.
     edit_instruction = (
         f"The user reviewed your previous questions and provided these edits or directions:\n"
         f"{user_edits}\n\n"
@@ -141,8 +207,9 @@ def run_planner(state: dict, chain, user_edits: str = "") -> dict:
         {
             "role": "system",
             "content": (
-                "You are a research planner. Your job is to decompose a broad topic "
-                "into focused, specific research questions that together give complete coverage. "
+                "You are a research planner. Your job is to decompose a topic into focused, "
+                "specific research questions that together give complete coverage. "
+                "The questions must be tailored to both the topic and the intended output format. "
                 "Return ONLY a numbered list of questions, one per line. No preamble, no explanation."
             ),
         },
@@ -151,14 +218,14 @@ def run_planner(state: dict, chain, user_edits: str = "") -> dict:
             "content": (
                 f"Topic: {topic}\n"
                 f"Audience: {audience}\n"
+                f"Output format: {format_style}\n"
                 f"{angle_instruction}"
+                f"\nFormat guidance — the questions should be shaped for this output type:\n{format_guidance}\n\n"
                 f"{edit_instruction}"
-                f"\nGenerate {q_min} to {q_max} focused research questions that together cover this topic exactly as stated. "
+                f"Generate {q_min} to {q_max} focused research questions that together cover this topic exactly as stated. "
                 "Stay faithful to the topic — do not reinterpret it or shift to a related subject. "
-                "For example, if the topic is about technology evolution, ask about technology evolution — "
-                "not about business impact, enterprise adoption, or any other adjacent theme. "
-                "Use vocabulary appropriate for the stated audience, but keep the subject matter exactly as given. "
-                "Each question should be specific enough to search for directly. "
+                "Each question should be specific enough to search for directly on the web. "
+                "Use vocabulary appropriate for the stated audience. "
                 "Number each question (1. 2. 3. etc). One question per line. Nothing else."
             ),
         },
@@ -195,9 +262,9 @@ def _search_depth(length: str) -> int:
     if "Short" in length:
         return 3
     elif "Full" in length:
-        return 7
+        return 8
     else:
-        return 5
+        return 6
 
 
 def flag_weak_questions(research: dict) -> list[str]:
@@ -350,11 +417,17 @@ def run_researcher(state: dict, target_questions: list = None) -> dict:
 def run_critic(state: dict, chain) -> dict:
     """
     Reviews source quality for each research question.
-    Flags gaps where evidence is thin or missing.
+    Has full context: topic, audience, format, length, and format-specific source criteria.
     Returns: critique (str), model_used (str)
     """
-    questions = state["questions"]
-    research = state["research"]
+    topic        = state["topic"]
+    audience     = state.get("audience", "General business audience")
+    format_style = state.get("format_style", "White Paper / Analytical")
+    length       = state.get("length", "Standard length (~2,000 words, 4-5 pages)")
+    questions    = state["questions"]
+    research     = state["research"]
+
+    source_criteria = FORMAT_SOURCE_CRITERIA.get(format_style, "")
 
     # Build a summary including titles, domain, and content snippets for each source
     research_summary = []
@@ -366,7 +439,6 @@ def run_critic(state: dict, chain) -> dict:
                 title   = h.get("title", "Untitled")
                 url     = h.get("url", "")
                 content = h.get("content", "")[:300]
-                # Extract domain for credibility signal (e.g. reuters.com, .gov, .edu)
                 try:
                     from urllib.parse import urlparse
                     domain = urlparse(url).netloc.replace("www.", "")
@@ -384,18 +456,30 @@ def run_critic(state: dict, chain) -> dict:
         {
             "role": "system",
             "content": (
-                "You are a research critic. Your job is to assess the quality of sources "
-                "found for each research question and flag where evidence is weak or missing. "
-                "Be concise and direct. Rate each question: Strong / Adequate / Weak. "
-                "Flag any significant gaps the writer should note."
+                "You are a research critic. Assess the quality of sources found for each "
+                "research question. Your ratings directly inform the Writer and Judge — "
+                "be specific, not generic. Rate each question: Strong / Adequate / Weak.\n\n"
+                "For each question provide exactly:\n"
+                "Rating: [Strong / Adequate / Weak]\n"
+                "Strongest source: [title and domain of the best source, or 'none']\n"
+                "Gap: [one sentence on what is missing or thin, or 'none']\n\n"
+                "End with an Overall Assessment (3-4 sentences) covering: "
+                "breadth of coverage, most significant gaps, and any topic areas the Writer "
+                "should treat cautiously due to weak evidence."
             ),
         },
         {
             "role": "user",
             "content": (
+                f"Topic: {topic}\n"
+                f"Audience: {audience}\n"
+                f"Output format: {format_style}\n"
+                f"Target length: {length}\n\n"
+                f"Source quality standard for this format:\n{source_criteria}\n\n"
                 f"Research summary:\n\n{summary_text}\n\n"
-                "For each question, provide: rating (Strong / Adequate / Weak) and one sentence "
-                "on what is missing or confirmed. Then a brief overall assessment in 2-3 sentences."
+                "Assess each question using the format specified. Apply the source quality "
+                "standard for this output format — a source acceptable for a blog post may "
+                "be Weak for an academic paper. Be direct. Name specific gaps."
             ),
         },
     ]
@@ -421,16 +505,29 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
     length       = state.get("length", "Standard paper (~2,000 words, 4-5 pages)")
 
     format_instructions = FORMAT_INSTRUCTIONS.get(format_style, FORMAT_INSTRUCTIONS["McKinsey / Bain"])
+    target_words, _     = LENGTH_WORD_TARGETS.get(length, (2000, 1000))
 
-    # Build a structured evidence block for the LLM
+    angle_instruction = (
+        f"Specific angle to maintain throughout: {angle}\n"
+        if angle else ""
+    )
+
+    # Build a structured evidence block — include domain for source authority signal
     evidence_blocks = []
     for q in questions:
         hits = research.get(q, [])
         snippets = []
         for hit in hits:
-            title = hit.get("title", "")
-            content = hit.get("content", "")[:400]  # trim to avoid token bloat
-            snippets.append(f"  - {title}: {content}")
+            title   = hit.get("title", "")
+            content = hit.get("content", "")[:700]
+            url     = hit.get("url", "")
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(url).netloc.replace("www.", "")
+            except Exception:
+                domain = ""
+            domain_str = f" [{domain}]" if domain else ""
+            snippets.append(f"  - {title}{domain_str}: {content}")
         evidence_blocks.append(
             f"Question: {q}\n" + ("\n".join(snippets) if snippets else "  - No sources found")
         )
@@ -441,7 +538,7 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
         {
             "role": "system",
             "content": (
-                "You are a research writer. Write structured, well-sourced papers "
+                "You are a research writer producing structured, well-sourced papers "
                 "for senior business and technical audiences. "
                 f"{STYLE_RULES}"
             ),
@@ -449,31 +546,37 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
         {
             "role": "user",
             "content": (
-                f"Topic: {topic}\n\n"
+                f"Topic: {topic}\n"
                 f"Audience: {audience}\n"
                 f"Format: {format_style}\n"
-                f"Target length: {length}\n\n"
-                f"Format instructions:\n{format_instructions}\n\n"
+                f"Target length: approximately {target_words:,} words\n"
+                f"{angle_instruction}"
+                f"\nFormat instructions:\n{format_instructions}\n\n"
                 f"Evidence gathered:\n{evidence_text}\n\n"
-                f"Source quality assessment:\n{critique}\n\n"
+                f"Source quality assessment from the Critic:\n{critique}\n\n"
                 + (
-                    f"\n\nIMPORTANT — RE-DRAFT: A previous draft was reviewed and found lacking. "
+                    f"IMPORTANT — RE-DRAFT: A previous draft was reviewed and found lacking. "
                     f"The reviewer's feedback:\n{user_feedback}\n\n"
-                    f"Address all feedback points in this new draft."
+                    f"Address all feedback points in this new draft.\n\n"
                     if user_feedback else ""
                 ) +
-                "\n\nBegin your response with a single line in this exact format:\n"
+                "Begin your response with a single line in this exact format:\n"
                 "TITLE: [a short, professional title for this paper — 8 words or fewer]\n\n"
-                "Then write the complete paper following the format instructions above exactly. "
-                "You must write ALL sections from start to finish without stopping early. "
-                "Do not stop mid-section or mid-sentence. "
-                "End only after you have written the Conclusions section. "
-                "Heading rules: use ## for all top-level section headings. "
-                "Use ### for any subheadings. Never use # (single hash) anywhere in the paper. "
-                "Hit the target length. Calibrate vocabulary and detail for the stated audience. "
-                "Where the Critic rated a source as Weak, treat it as background context only — do not build a key argument on it. "
-                "Where a research question had no sources found, name that gap explicitly in the paper rather than skipping it. "
-                "Where evidence is weak or absent, say so plainly. Do not invent facts."
+                "Then write the complete paper. Follow these rules exactly:\n"
+                "1. SYNTHESISE — do not write one section per research question. "
+                "Identify the key themes and arguments that run across the evidence, "
+                "then organise the paper around those themes. The paper should read as "
+                "integrated analysis, not as a sequential answer to each question.\n"
+                "2. STRUCTURE — follow the format instructions above exactly.\n"
+                "3. HEADINGS — use ## for all top-level section headings, ### for subheadings. "
+                "Never use # (single hash) anywhere in the paper.\n"
+                f"4. LENGTH — write approximately {target_words:,} words. "
+                "You must write ALL sections from start to finish. Do not stop early.\n"
+                "5. SOURCES — where the Critic rated a source as Weak, use it as background "
+                "context only. Do not build a key argument on it.\n"
+                "6. GAPS — where a research question had no sources, name that gap explicitly "
+                "rather than skipping it. Where evidence is weak, say so plainly.\n"
+                "7. AUDIENCE — calibrate vocabulary, depth, and assumed knowledge for the stated audience."
             ),
         },
     ]
@@ -532,7 +635,8 @@ def run_judge(state: dict, chain) -> dict:
     }
 
     # ── Pass 2: LLM evaluation ─────────────────────────────────────────────────
-    draft_preview = draft[:6000] + "\n\n[... truncated for evaluation ...]" if len(draft) > 6000 else draft
+    target_words, _ = LENGTH_WORD_TARGETS.get(length, (2000, 1000))
+    format_instructions = FORMAT_INSTRUCTIONS.get(format_style, "")
 
     messages = [
         {
@@ -541,7 +645,10 @@ def run_judge(state: dict, chain) -> dict:
                 "You are a strict editorial quality evaluator. "
                 "Score a research paper draft on exactly four dimensions using a 1–5 scale "
                 "where 1 = very poor, 3 = acceptable, 5 = excellent. "
-                "Be critical. Reserve 5 for genuinely strong work. "
+                "Be critical. Reserve 5 for genuinely strong work. A score of 3 means the "
+                "dimension is acceptable but has clear room for improvement. "
+                "You have full context: the topic, the required format with its specific "
+                "structural requirements, the source quality assessment, and the complete draft. "
                 "Respond with exactly four lines — nothing else:\n"
                 "COMPLETENESS: [1-5] | [one sentence note]\n"
                 "ARGUMENT_QUALITY: [1-5] | [one sentence note]\n"
@@ -554,9 +661,10 @@ def run_judge(state: dict, chain) -> dict:
             "content": (
                 f"Topic: {topic}\n"
                 f"Target format: {format_style}\n"
-                f"Target length: {length}\n\n"
-                f"Critic's source assessment (for context):\n{critique[:800]}\n\n"
-                f"Draft to evaluate:\n{draft_preview}"
+                f"Target length: approximately {target_words:,} words\n\n"
+                f"What FORMAT_ADHERENCE means for this format:\n{format_instructions}\n\n"
+                f"Critic's source quality assessment:\n{critique}\n\n"
+                f"Complete draft to evaluate:\n{draft}"
             ),
         },
     ]
@@ -604,44 +712,63 @@ def run_judge(state: dict, chain) -> dict:
 def run_editor(state: dict, chain) -> dict:
     """
     Polishes the draft: removes banned words, fixes long sentences,
-    tightens structure, removes padding.
+    tightens structure, removes padding. Has full context from the pipeline.
     Returns: final (str), model_used (str)
     """
+    topic        = state["topic"]
     draft        = state["draft"]
     critique     = state.get("critique", "")
     audience     = state.get("audience", "General business audience")
     format_style = state.get("format_style", "McKinsey / Bain")
     length       = state.get("length", "Standard paper (~2,000 words, 4-5 pages)")
+    angle        = state.get("angle", "")
+
+    format_instructions = FORMAT_INSTRUCTIONS.get(format_style, "")
+    target_words, _     = LENGTH_WORD_TARGETS.get(length, (2000, 1000))
+
+    angle_instruction = (
+        f"The paper should maintain this specific angle throughout: {angle}\n"
+        if angle else ""
+    )
 
     messages = [
         {
             "role": "system",
             "content": (
                 "You are a senior editor. Your job is to polish research papers. "
-                "You do not change substance — only language quality and structure compliance. "
+                "You do not change substance or restructure arguments — only improve "
+                "language quality, sentence clarity, and structure compliance. "
                 f"{STYLE_RULES}"
             ),
         },
         {
             "role": "user",
             "content": (
+                f"Topic: {topic}\n"
                 f"Audience: {audience}\n"
                 f"Format: {format_style}\n"
-                f"Target length: {length}\n\n"
+                f"Target length: approximately {target_words:,} words\n"
+                f"{angle_instruction}"
+                f"\nWhat this format requires:\n{format_instructions}\n\n"
                 f"Source quality assessment from the Critic:\n{critique}\n\n"
                 "Edit the following paper:\n\n"
                 f"{draft}\n\n"
-                "Tasks:\n"
-                "1. Remove any banned words (replace with direct alternatives)\n"
-                "2. Break sentences over 20 words into shorter ones\n"
+                "Editing tasks — complete all of them:\n"
+                "1. Remove any banned words and replace with direct alternatives\n"
+                "2. Break any sentence over 20 words into shorter sentences\n"
                 "3. Remove padding, filler phrases, and repetition\n"
-                "4. Confirm the structure matches the stated format exactly\n"
-                "5. Confirm tone and vocabulary suit the stated audience\n"
-                "6. Trim or expand to hit the target length\n"
-                "7. If any claim uses language stronger than the evidence supports, soften it — "
-                "cross-reference the Critic's ratings to identify these\n\n"
-                "Return the complete edited paper. Preserve all headings and structure. "
-                "You must return ALL sections from start to finish. Do not stop mid-section."
+                "4. Confirm the structure exactly matches the format requirements above\n"
+                "5. Confirm tone and vocabulary are appropriate for the stated audience\n"
+                f"6. Trim or expand to reach approximately {target_words:,} words — "
+                "do not reduce substantially below this target\n"
+                "7. Soften any claim that uses language stronger than the evidence supports — "
+                "use the Critic's source ratings to identify these\n"
+                "8. Preserve all ## section headings and ### subheadings exactly as written — "
+                "do not change heading levels or remove headings\n"
+                "9. Confirm the topic and angle are maintained throughout — do not let the "
+                "paper drift to adjacent subjects\n\n"
+                "Return the complete edited paper from start to finish. "
+                "Do not stop mid-section. Do not summarise or skip sections."
             ),
         },
     ]
