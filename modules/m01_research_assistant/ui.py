@@ -1275,6 +1275,9 @@ def _format_critic_output(critique: str) -> str:
     result = re.sub(r"Strongest source:", "**Strongest source:**", result)
     result = re.sub(r"\bGap:",            "**Gap:**",              result)
 
+    # Add a divider before each Question block (except the very first one)
+    result = re.sub(r"\n\n((?:\*\*)?Question)", r"\n\n---\n\n\1", result)
+
     # Bold Overall Assessment heading
     result = re.sub(r"(Overall Assessment:?)", r"**\1**", result, flags=re.IGNORECASE)
 
