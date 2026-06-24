@@ -1250,47 +1250,24 @@ def _show_judge_scorecard(result: dict) -> None:
 
 def _format_critic_output(critique: str) -> str:
     """
-    Reformats raw Critic text into readable markdown.
-    - Each Question block becomes a bold subheading
-    - Rating line gets a colour icon and is bolded
-    - Strongest source and Gap are bolded labels on their own lines
-    - Overall Assessment is bolded
+    Applies icon and bold formatting to Critic output.
+    Works on whatever structure the LLM produces — no restructuring.
+    - Rating lines get a colour icon and bold
+    - Strongest source and Gap labels are bolded
+    - Overall Assessment heading is bolded
     """
-    # Split into per-question blocks on "Question N:" markers
-    blocks = re.split(r"\n(?=Question\s+\d+:)", "\n" + critique.strip())
-    formatted_blocks = []
+    result = critique
 
-    for block in blocks:
-        block = block.strip()
-        if not block:
-            continue
+    # Rating with colour icon and bold
+    result = re.sub(r"Rating:\s*Strong",   "**🟢 Rating: Strong**",   result, flags=re.IGNORECASE)
+    result = re.sub(r"Rating:\s*Adequate", "**🟡 Rating: Adequate**", result, flags=re.IGNORECASE)
+    result = re.sub(r"Rating:\s*Weak",     "**🔴 Rating: Weak**",     result, flags=re.IGNORECASE)
 
-        # Force each field onto its own line before any other formatting.
-        # The LLM often runs Rating / Strongest source / Gap together on one line.
-        block = re.sub(r"\s+(Rating:)",          r"\n\1",  block, flags=re.IGNORECASE)
-        block = re.sub(r"\s+(Strongest source:)", r"\n\1",  block, flags=re.IGNORECASE)
-        block = re.sub(r"\s+(Gap:)",              r"\n\1",  block, flags=re.IGNORECASE)
+    # Bold field labels
+    result = re.sub(r"Strongest source:", "**Strongest source:**", result)
+    result = re.sub(r"\bGap:",            "**Gap:**",              result)
 
-        # Make "Question N: ..." a bold subheading
-        block = re.sub(
-            r"^(Question\s+\d+:\s*.+)$",
-            r"#### \1",
-            block, flags=re.MULTILINE,
-        )
-        # Rating with icon and bold
-        block = re.sub(r"Rating:\s*Strong",   "**🟢 Rating: Strong**",   block, flags=re.IGNORECASE)
-        block = re.sub(r"Rating:\s*Adequate", "**🟡 Rating: Adequate**", block, flags=re.IGNORECASE)
-        block = re.sub(r"Rating:\s*Weak",     "**🔴 Rating: Weak**",     block, flags=re.IGNORECASE)
-
-        # Bold field labels
-        block = re.sub(r"Strongest source:", "**Strongest source:**", block)
-        block = re.sub(r"\bGap:",            "**Gap:**",              block)
-
-        formatted_blocks.append(block)
-
-    result = "\n\n".join(formatted_blocks)
-
-    # Bold the Overall Assessment heading if present
+    # Bold Overall Assessment heading
     result = re.sub(r"(Overall Assessment:?)", r"**\1**", result, flags=re.IGNORECASE)
 
     return result
