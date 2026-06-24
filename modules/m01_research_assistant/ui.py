@@ -958,18 +958,23 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
 def _combined_flag_check(full_state: dict, chain, researcher_ph, quality_gate_ph,
                          researcher_out: str, researcher_model_label: str) -> list[str]:
-    """Two-pass quality check. Shows visible status in quality_gate_ph while running."""
+    """Two-pass quality check. Shows validation progress on the Researcher panel."""
     research = full_state.get("research", {})
 
     # Pass 1: objective domain check — instant
     domain_flagged = flag_weak_questions(research)
 
-    # Pass 2: LLM relevance check — one batched call
-    with quality_gate_ph.container():
-        st.info("🔍 Checking source relevance... (this takes a few seconds)")
+    # Pass 2: LLM relevance check — show Researcher as still active during the call
+    _agent_panel(researcher_ph, "Agent 2: Researcher",
+                 "Validating source relevance...",
+                 STATUS_RUNNING, running=True)
 
     llm_flagged = flag_irrelevant_questions(research, chain, skip=domain_flagged)
-    quality_gate_ph.empty()
+
+    # Restore Researcher to complete
+    _agent_panel(researcher_ph, "Agent 2: Researcher",
+                 "Searches the web for evidence on each question",
+                 STATUS_COMPLETE, output=researcher_out, model=researcher_model_label)
 
     combined = domain_flagged + [q for q in llm_flagged if q not in domain_flagged]
     return combined
