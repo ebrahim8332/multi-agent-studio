@@ -585,7 +585,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 f"{_weak} of {_total} questions have weak sources. "
                 "Most of the paper will lack solid evidence."
             )
-        critic_display = _verdict + "\n\n---\n\n" + critic_out
+        critic_display = _verdict + "\n\n---\n\n" + _format_critic_output(critic_out)
         agent_outputs["critic"] = {"output": critic_display, "model": critic_model, "prompt": critic_prompt}
 
         st.session_state["m01_pending_state"]  = full_state
@@ -1246,6 +1246,48 @@ def _show_judge_scorecard(result: dict) -> None:
             st.progress(score / 5)
         if note:
             st.caption(f"   {note}")
+
+
+def _format_critic_output(critique: str) -> str:
+    """
+    Reformats raw Critic text into readable markdown.
+    - Each Question block becomes a bold subheading
+    - Rating line gets a colour icon and is bolded
+    - Strongest source and Gap are bolded labels on their own lines
+    - Overall Assessment is bolded
+    """
+    # Split into per-question blocks on "Question N:" markers
+    blocks = re.split(r"\n(?=Question\s+\d+:)", "\n" + critique.strip())
+    formatted_blocks = []
+
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+
+        # Make "Question N: ..." a bold subheading
+        block = re.sub(
+            r"^(Question\s+\d+:\s*.+)$",
+            r"#### \1",
+            block, flags=re.MULTILINE,
+        )
+        # Rating with icon and bold
+        block = re.sub(r"Rating:\s*Strong",   "**🟢 Rating: Strong**",   block, flags=re.IGNORECASE)
+        block = re.sub(r"Rating:\s*Adequate", "**🟡 Rating: Adequate**", block, flags=re.IGNORECASE)
+        block = re.sub(r"Rating:\s*Weak",     "**🔴 Rating: Weak**",     block, flags=re.IGNORECASE)
+
+        # Bold field labels
+        block = re.sub(r"Strongest source:", "**Strongest source:**", block)
+        block = re.sub(r"\bGap:",            "**Gap:**",              block)
+
+        formatted_blocks.append(block)
+
+    result = "\n\n".join(formatted_blocks)
+
+    # Bold the Overall Assessment heading if present
+    result = re.sub(r"(Overall Assessment:?)", r"**\1**", result, flags=re.IGNORECASE)
+
+    return result
 
 
 def _parse_critic_summary(critique: str, questions: list) -> list:
