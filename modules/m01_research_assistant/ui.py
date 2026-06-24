@@ -1264,10 +1264,12 @@ def _format_critic_output(critique: str) -> str:
     result = re.sub(r"([^\n])\s+(Strongest source:)", r"\1\n\n\2",  result, flags=re.IGNORECASE)
     result = re.sub(r"([^\n])\s+(Gap:)\s*",           r"\1\n\n\2 ", result, flags=re.IGNORECASE)
 
-    # Step 2 — Rating with colour icon and bold
-    result = re.sub(r"Rating:\s*Strong",   "**🟢 Rating: Strong**",   result, flags=re.IGNORECASE)
-    result = re.sub(r"Rating:\s*Adequate", "**🟡 Rating: Adequate**", result, flags=re.IGNORECASE)
-    result = re.sub(r"Rating:\s*Weak",     "**🔴 Rating: Weak**",     result, flags=re.IGNORECASE)
+    # Step 2 — Rating with colour icon and bold.
+    # The LLM sometimes wraps the value in its own **bold** markers (e.g. Rating: **Strong**).
+    # \** matches zero or more literal asterisks, so this handles both forms.
+    result = re.sub(r"Rating:\s*\**(Strong)\**",   "**🟢 Rating: Strong**",   result, flags=re.IGNORECASE)
+    result = re.sub(r"Rating:\s*\**(Adequate)\**", "**🟡 Rating: Adequate**", result, flags=re.IGNORECASE)
+    result = re.sub(r"Rating:\s*\**(Weak)\**",     "**🔴 Rating: Weak**",     result, flags=re.IGNORECASE)
 
     # Bold remaining field labels
     result = re.sub(r"Strongest source:", "**Strongest source:**", result)
