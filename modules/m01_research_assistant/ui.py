@@ -92,7 +92,7 @@ _STATE_KEYS = [
     "m01_planner_model", "m01_planner_prompt", "m01_inputs", "m01_phase",
     "m01_flagged_questions", "m01_researcher_attempt",
     "m01_call_log",
-    "m01_writer_attempt", "m01_writer_feedback", "m01_judge_editing", "m01_fc_editing",
+    "m01_writer_attempt", "m01_writer_feedback", "m01_fc_feedback", "m01_judge_editing", "m01_fc_editing",
     "m01_judge_result", "m01_fact_check_result",
 ]
 
@@ -1219,7 +1219,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
         unsupported_count = fc_result.get("unsupported_count", 0)
         fc_editing        = st.session_state.get("m01_fc_editing", False)
         can_redraft       = writer_attempt <= MAX_WRITER_RETRIES
-        prior_feedback    = st.session_state.get("m01_writer_feedback", "")
+        prior_feedback    = st.session_state.get("m01_fc_feedback", "")
 
         if not flagged and writer_attempt == 1:
             # First-run clean pass — auto-proceed with no friction
@@ -1300,6 +1300,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 with col1:
                     if st.button("Submit and re-draft →", type="primary", key="m01_fc_submit_btn"):
                         feedback = st.session_state.get("m01_fc_feedback_input", "")
+                        st.session_state["m01_fc_feedback"]     = feedback
                         st.session_state["m01_writer_feedback"] = feedback
                         st.session_state["m01_writer_attempt"]  = writer_attempt + 1
                         st.session_state["m01_fc_editing"]      = False
