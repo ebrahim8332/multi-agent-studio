@@ -977,7 +977,6 @@ div[data-baseweb="select"] * { cursor: pointer; }
             "prompt": writer_b_prompt,
         }
 
-        # Run Debate Judge
         _agent_panel(writer_a_ph, "Agent 4A: Writer — Main",
                      "Drafted from mainstream perspective",
                      STATUS_COMPLETE, output=writer_a_out, model=writer_a_model + w_attempt_note,
@@ -986,6 +985,18 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Drafted from alternative perspective",
                      STATUS_COMPLETE, output=writer_b_out, model=writer_b_model + w_attempt_note,
                      prompt=writer_b_prompt)
+
+        st.session_state["m01_pending_state"]   = full_state
+        st.session_state["m01_agent_outputs"]   = agent_outputs
+        st.session_state["m01_writer_feedback"] = ""
+
+        # On a re-draft, skip Debate Judge + Fact Checker — go straight to Judge
+        if writer_attempt > 1:
+            st.session_state["m01_phase"] = "judge_running"
+            st.rerun()
+            return
+
+        # First run — Debate Judge selects the stronger draft
         _agent_panel(debate_judge_ph, "Agent 5: Debate Judge",
                      "Selecting the stronger draft...", STATUS_RUNNING, running=True)
 
@@ -999,7 +1010,6 @@ div[data-baseweb="select"] * { cursor: pointer; }
         full_state.update(debate_result_dict)
 
         debate_result = full_state.get("debate_result", {})
-        # If Writer B won, swap its draft into the main draft slot — only if it is substantive
         draft_b_text = full_state.get("draft_b", "")
         draft_a_words = len(full_state.get("draft", "").split())
         draft_b_words = len(draft_b_text.split())
@@ -1016,7 +1026,6 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
         st.session_state["m01_pending_state"]   = full_state
         st.session_state["m01_agent_outputs"]   = agent_outputs
-        st.session_state["m01_writer_feedback"] = ""
         st.session_state["m01_phase"] = "debate_done"
         st.rerun()
         return
@@ -1446,14 +1455,25 @@ div[data-baseweb="select"] * { cursor: pointer; }
         _agent_panel(writer_b_ph, "Agent 4B: Writer — Alt.",
                      "Drafted from alternative perspective",
                      STATUS_COMPLETE, output=wb_out, model=wb_model, prompt=wb_prompt)
-        _agent_panel(debate_judge_ph, "Agent 5: Debate Judge",
-                     "Selects the stronger draft and notes what to incorporate",
-                     STATUS_COMPLETE, output=dj_out, model=dj_model, prompt=dj_prompt)
-        debate_gate_ph.empty()
-        _agent_panel(fact_checker_ph, "Agent 6: Fact Checker",
-                     "Cross-checks draft claims against source evidence",
-                     STATUS_COMPLETE, output=fc_out, model=fc_model, prompt=fc_prompt)
-        fact_check_gate_ph.empty()
+        if writer_attempt == 1:
+            _agent_panel(debate_judge_ph, "Agent 5: Debate Judge",
+                         "Selects the stronger draft and notes what to incorporate",
+                         STATUS_COMPLETE, output=dj_out, model=dj_model, prompt=dj_prompt)
+            debate_gate_ph.empty()
+            _agent_panel(fact_checker_ph, "Agent 6: Fact Checker",
+                         "Cross-checks draft claims against source evidence",
+                         STATUS_COMPLETE, output=fc_out, model=fc_model, prompt=fc_prompt)
+            fact_check_gate_ph.empty()
+        else:
+            prior_fc_feedback    = st.session_state.get("m01_fc_feedback", "")
+            prior_judge_feedback = st.session_state.get("m01_judge_feedback_draft", "")
+            prior_feedback       = prior_fc_feedback or prior_judge_feedback
+            with fact_check_gate_ph.container():
+                st.info(
+                    f"**Re-draft {writer_attempt - 1} complete.** Writers rewrote the draft using your feedback."
+                    + (f" Feedback sent: *{prior_feedback[:200]}{'...' if len(prior_feedback) > 200 else ''}*"
+                       if prior_feedback else "")
+                )
         _agent_panel(judge_ph, "Agent 7: Judge",
                      "Scores the draft on four quality dimensions",
                      STATUS_COMPLETE, output=judge_out, model=judge_model,
