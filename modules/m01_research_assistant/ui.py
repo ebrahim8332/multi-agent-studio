@@ -1467,15 +1467,8 @@ div[data-baseweb="select"] * { cursor: pointer; }
                          STATUS_COMPLETE, output=fc_out, model=fc_model, prompt=fc_prompt)
             fact_check_gate_ph.empty()
         else:
-            prior_fc_feedback    = st.session_state.get("m01_fc_feedback", "")
-            prior_judge_feedback = st.session_state.get("m01_judge_feedback_draft", "")
-            prior_feedback       = prior_fc_feedback or prior_judge_feedback
             with fact_check_gate_ph.container():
-                st.info(
-                    f"**Re-draft {writer_attempt - 1} complete.** Writers rewrote the draft using your feedback."
-                    + (f" Feedback sent: *{prior_feedback[:200]}{'...' if len(prior_feedback) > 200 else ''}*"
-                       if prior_feedback else "")
-                )
+                st.info(f"**Re-draft {writer_attempt - 1} complete.** Your feedback was incorporated into this draft.")
         _agent_panel(judge_ph, "Agent 7: Judge",
                      "Scores the draft on four quality dimensions",
                      STATUS_COMPLETE, output=judge_out, model=judge_model,
