@@ -130,8 +130,17 @@ class FallbackChain:
         Also accumulates token counts into session_state for the run summary."""
         start_index = self.session_state.get(SESSION_LOCK_KEY) or 0
 
+        # Build trial order: locked index first, then wrap around from 0
+        # This ensures large-context models (Gemini at index 0) are always tried
+        # even when the chain is locked to a smaller Groq model mid-session.
+        tried = set()
+        indices = list(range(start_index, len(self.providers))) + list(range(0, start_index))
+
         errors = []
-        for i in range(start_index, len(self.providers)):
+        for i in indices:
+            if i in tried:
+                continue
+            tried.add(i)
             provider = self.providers[i]
             try:
                 text, input_tok, output_tok = provider.complete(
