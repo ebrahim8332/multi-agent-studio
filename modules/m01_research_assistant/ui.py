@@ -110,7 +110,9 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
         with col2:
             st.markdown(status)
         if running:
-            st.caption("⏳ Working...")
+            locked_model = st.session_state.get("locked_model_name", "")
+            running_caption = f"⏳ Working... · {locked_model}" if locked_model else "⏳ Working..."
+            st.caption(running_caption)
             components.html(
                 """
                 <script>

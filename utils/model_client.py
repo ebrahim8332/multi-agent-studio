@@ -138,6 +138,7 @@ class FallbackChain:
                     messages, timeout=timeout, max_tokens=max_tokens
                 )
                 self.session_state[SESSION_LOCK_KEY] = i
+                self.session_state["locked_model_name"] = provider.model_name
 
                 # Accumulate usage
                 log = list(self.session_state.get(CALL_LOG_KEY, []))
