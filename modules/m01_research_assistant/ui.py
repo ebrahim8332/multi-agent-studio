@@ -288,9 +288,10 @@ div[data-baseweb="select"] * { cursor: pointer; }
         run_clicked = st.button(
             "Run Research", type="primary",
             disabled=not topic.strip() or locked,
+            key="m01_run_btn",
         )
     with col_clear:
-        clear_clicked = st.button("Clear / New topic")
+        clear_clicked = st.button("Clear / New topic", key="m01_clear_btn")
 
     if clear_clicked:
         st.session_state["m01_form_key"] += 1
@@ -367,11 +368,11 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 )
                 col1, col2 = st.columns([1, 1])
                 with col1:
-                    if st.button("Approve and continue →", type="primary"):
+                    if st.button("Approve and continue →", type="primary", key="m01_planner_approve_btn"):
                         st.session_state["m01_phase"] = "running"
                         st.rerun()
                 with col2:
-                    if st.button("Edit questions"):
+                    if st.button("Edit questions", key="m01_planner_edit_btn"):
                         st.session_state["m01_editing"] = True
                         st.rerun()
                 st.caption("The Researcher will not start until you approve.")
@@ -388,7 +389,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 )
                 col1, col2 = st.columns([1, 1])
                 with col1:
-                    if st.button("Replan with my edits →", type="primary"):
+                    if st.button("Replan with my edits →", type="primary", key="m01_planner_replan_btn"):
                         user_edits  = st.session_state.get("m01_edit_area", "\n".join(questions))
                         new_attempt = attempt + 1
                         st.session_state["m01_planner_attempt"] = new_attempt
@@ -410,7 +411,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                         st.session_state["m01_phase"] = "planner_done"
                         st.rerun()
                 with col2:
-                    if st.button("Cancel"):
+                    if st.button("Cancel", key="m01_planner_cancel_btn"):
                         st.session_state["m01_editing"] = False
                         st.rerun()
 
@@ -565,12 +566,12 @@ div[data-baseweb="select"] * { cursor: pointer; }
             st.markdown("")
             col1, col2 = st.columns([1, 1])
             with col1:
-                if st.button("Proceed to Critic →", type="primary"):
+                if st.button("Proceed to Critic →", type="primary", key="m01_qgate_proceed_btn"):
                     quality_gate_ph.empty()
                     st.session_state["m01_phase"] = "critic_running"
                     st.rerun()
             with col2:
-                if st.button("Stop here"):
+                if st.button("Stop here", key="m01_qgate_stop_btn"):
                     for key in _STATE_KEYS:
                         st.session_state.pop(key, None)
                     st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
@@ -759,11 +760,11 @@ div[data-baseweb="select"] * { cursor: pointer; }
             st.markdown("")
             col1, col2 = st.columns([1, 1])
             with col1:
-                if st.button("Proceed to Writer →", type="primary"):
+                if st.button("Proceed to Writer →", type="primary", key="m01_critic_proceed_btn"):
                     st.session_state["m01_phase"] = "writing"
                     st.rerun()
             with col2:
-                if st.button("Stop here"):
+                if st.button("Stop here", key="m01_critic_stop_btn"):
                     for key in _STATE_KEYS:
                         st.session_state.pop(key, None)
                     st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
@@ -999,7 +1000,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
             if not judge_editing:
                 if all_pass:
                     # Clean run — one button only
-                    if st.button("Continue to Editor →", type="primary"):
+                    if st.button("Continue to Editor →", type="primary", key="m01_judge_continue_btn"):
                         judge_gate_ph.empty()
                         st.session_state["m01_phase"] = "editor_running"
                         st.rerun()
@@ -1007,17 +1008,17 @@ div[data-baseweb="select"] * { cursor: pointer; }
                     # Issues found — three options
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        if st.button("Proceed to Editor →", type="primary"):
+                        if st.button("Proceed to Editor →", type="primary", key="m01_judge_proceed_btn"):
                             judge_gate_ph.empty()
                             st.session_state["m01_phase"] = "editor_running"
                             st.rerun()
                     with col2:
                         redraft_label = "Re-draft with feedback" if can_redraft else f"Re-draft (max {MAX_WRITER_RETRIES} reached)"
-                        if st.button(redraft_label, disabled=not can_redraft):
+                        if st.button(redraft_label, disabled=not can_redraft, key="m01_judge_redraft_btn"):
                             st.session_state["m01_judge_editing"] = True
                             st.rerun()
                     with col3:
-                        if st.button("Stop here"):
+                        if st.button("Stop here", key="m01_judge_stop_btn"):
                             for key in _STATE_KEYS:
                                 st.session_state.pop(key, None)
                             st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
@@ -1035,7 +1036,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 )
                 col1, col2 = st.columns([1, 1])
                 with col1:
-                    if st.button("Submit and re-draft →", type="primary"):
+                    if st.button("Submit and re-draft →", type="primary", key="m01_judge_submit_btn"):
                         feedback = st.session_state.get("m01_writer_feedback_input", "")
                         st.session_state["m01_writer_feedback"] = feedback
                         st.session_state["m01_writer_attempt"]  = writer_attempt + 1
@@ -1043,7 +1044,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                         st.session_state["m01_phase"] = "writing"
                         st.rerun()
                 with col2:
-                    if st.button("Cancel"):
+                    if st.button("Cancel", key="m01_judge_cancel_btn"):
                         st.session_state["m01_judge_editing"] = False
                         st.rerun()
 
