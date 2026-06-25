@@ -302,8 +302,11 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
     phase  = st.session_state.get("m01_phase", "idle")
     locked = phase in (
-        "running", "critic_running", "writing_parallel",
-        "fact_check_running", "judge_running", "editor_running",
+        "running", "critic_running", "critic_done",
+        "writing_parallel", "debate_done",
+        "fact_check_running", "fact_check_done",
+        "judge_running", "judge_done",
+        "editor_running",
     )
 
     # ── Input form ────────────────────────────────────────────────────────────
@@ -986,9 +989,14 @@ div[data-baseweb="select"] * { cursor: pointer; }
         full_state.update(debate_result_dict)
 
         debate_result = full_state.get("debate_result", {})
-        # If Writer B won, swap its draft into the main draft slot
-        if debate_result.get("winner") == "B" and full_state.get("draft_b"):
-            full_state["draft"] = full_state["draft_b"]
+        # If Writer B won, swap its draft into the main draft slot — only if it is substantive
+        draft_b_text = full_state.get("draft_b", "")
+        draft_a_words = len(full_state.get("draft", "").split())
+        draft_b_words = len(draft_b_text.split())
+        b_won = debate_result.get("winner") == "B" and draft_b_text
+        b_substantive = draft_b_words >= 500 and draft_b_words >= draft_a_words * 0.4
+        if b_won and b_substantive:
+            full_state["draft"] = draft_b_text
             full_state["title"] = full_state.get("title_b", full_state.get("title", ""))
 
         dj_model  = debate_result.get("model_used", "")
