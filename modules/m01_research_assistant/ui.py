@@ -953,12 +953,11 @@ div[data-baseweb="select"] * { cursor: pointer; }
         writer_error = None
 
         try:
-            with st.spinner("Both writers drafting simultaneously — this takes 30–90 seconds..."):
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    fut_a = executor.submit(run_writer,   full_state, chain_a, writer_feedback)
-                    fut_b = executor.submit(run_writer_b, full_state, chain_b, writer_feedback)
-                    result_a = fut_a.result(timeout=180)
-                    result_b = fut_b.result(timeout=180)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                fut_a = executor.submit(run_writer,   full_state, chain_a, writer_feedback)
+                fut_b = executor.submit(run_writer_b, full_state, chain_b, writer_feedback)
+                result_a = fut_a.result(timeout=180)
+                result_b = fut_b.result(timeout=180)
         except Exception as e:
             writer_error = str(e)
 
