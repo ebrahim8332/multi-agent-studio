@@ -403,15 +403,17 @@ def flag_irrelevant_questions(research: dict, chain, skip: list = None) -> list[
 
 def run_researcher(state: dict, target_questions: list = None) -> dict:
     """
-    Searches the web for research questions using parallel search (Tavily + Exa simultaneously).
+    Searches the web for research questions using fully parallel search.
+    All (N queries x 2 providers) fire simultaneously in a single pool.
     Serper is used as fallback only if both primary providers return zero results for a query.
+    After search, enriches top sources with full article text via Tavily Extract.
     Search depth scales to the selected length.
 
     target_questions: if provided, only re-searches those specific questions
     and merges the new results back into the existing research dict.
     Used by the retry loop to fix weak questions without losing good results.
 
-    Returns: research (dict), sources (list), provider_stats (dict)
+    Returns: research (dict), sources (list), provider_stats (dict), enriched_count (int)
     """
     questions   = target_questions if target_questions is not None else state["questions"]
     length      = state.get("length", "Standard length (~2,000 words, 4-5 pages)")
@@ -419,9 +421,15 @@ def run_researcher(state: dict, target_questions: list = None) -> dict:
     search      = get_search_chain()
     new_research, new_sources, provider_stats = search.search_parallel(questions, max_results=max_results)
 
+    # Enrich top sources with full article text
+    new_research, enriched_count = search.enrich_top_sources(new_research)
+
     prompt_sent = [
-        {"role": "system", "content": f"Search engines: Tavily + Exa (parallel)\nMax results per query per engine: {max_results}"},
-        {"role": "user",   "content": "Search queries:\n\n" + "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))},
+        {"role": "system", "content": (
+            f"Search engines: Tavily + Exa (all questions fired simultaneously)\n"
+            f"Max results per query per engine: {max_results}"
+        )},
+        {"role": "user", "content": "Search queries:\n\n" + "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))},
     ]
 
     if target_questions is not None:
@@ -432,9 +440,21 @@ def run_researcher(state: dict, target_questions: list = None) -> dict:
         merged_sources   = existing_sources + [s for s in new_sources if s not in existing_sources]
         existing_stats   = dict(state.get("provider_stats", {}))
         existing_stats.update(provider_stats)
-        return {"research": merged, "sources": merged_sources, "provider_stats": existing_stats, "prompt_sent": prompt_sent}
+        return {
+            "research":       merged,
+            "sources":        merged_sources,
+            "provider_stats": existing_stats,
+            "enriched_count": enriched_count,
+            "prompt_sent":    prompt_sent,
+        }
 
-    return {"research": new_research, "sources": new_sources, "provider_stats": provider_stats, "prompt_sent": prompt_sent}
+    return {
+        "research":       new_research,
+        "sources":        new_sources,
+        "provider_stats": provider_stats,
+        "enriched_count": enriched_count,
+        "prompt_sent":    prompt_sent,
+    }
 
 
 # ── Agent 3: Critic ───────────────────────────────────────────────────────────
@@ -855,3 +875,339 @@ def run_editor(state: dict, chain) -> dict:
 
     response, model = chain.complete(messages, timeout=120, max_tokens=8000, agent_label="Editor")
     return {"final": response, "model_used": model, "prompt_sent": messages}
+
+
+# ── Agent 4B: Writer B (alternative perspective) ──────────────────────────────
+
+def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
+    """
+    Writes a second draft from an alternative or contrarian perspective.
+    Uses the same evidence and format as Writer A.
+    Returns: draft_b (str), title_b (str), model_used_b (str), prompt_sent_b (list)
+    """
+    topic        = state["topic"]
+    questions    = state["questions"]
+    research     = state["research"]
+    critique     = state["critique"]
+    audience     = state.get("audience", "General business audience")
+    format_style = state.get("format_style", "McKinsey / Bain")
+    length       = state.get("length", "Standard paper (~2,000 words, 4-5 pages)")
+    angle        = state.get("angle", "")
+
+    format_instructions = FORMAT_INSTRUCTIONS.get(format_style, FORMAT_INSTRUCTIONS["McKinsey / Bain"])
+    target_words, _     = LENGTH_WORD_TARGETS.get(length, (2000, 1000))
+
+    angle_instruction = (
+        f"Specific angle to maintain throughout: {angle}\n"
+        if angle else ""
+    )
+
+    critic_ratings = _parse_critic_ratings(critique, questions)
+
+    # Build identical evidence block to Writer A
+    evidence_blocks = []
+    for q in questions:
+        rating = critic_ratings.get(q, "Adequate")
+        hits = research.get(q, [])
+        snippets = []
+        for hit in hits:
+            title   = hit.get("title", "")
+            content = hit.get("content", "")[:700]
+            url     = hit.get("url", "")
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(url).netloc.replace("www.", "")
+            except Exception:
+                domain = ""
+            domain_str = f" [{domain}]" if domain else ""
+            snippets.append(f"  - {title}{domain_str}: {content}")
+        evidence_blocks.append(
+            f"Question: {q} [Critic source rating: {rating}]\n"
+            + ("\n".join(snippets) if snippets else "  - No sources found")
+        )
+
+    evidence_text = "\n\n".join(evidence_blocks)
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a contrarian research writer. Your job is to draft a paper that "
+                "takes an alternative, sceptical, or minority perspective on the evidence. "
+                "Use the same sources as provided, but weight the evidence differently: "
+                "emphasise counterarguments, overlooked data, limitations, and dissenting views. "
+                "Do not fabricate evidence. Draw alternative conclusions from the same facts. "
+                f"{STYLE_RULES}"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Topic: {topic}\n"
+                f"Audience: {audience}\n"
+                f"Format: {format_style}\n"
+                f"Target length: minimum {target_words:,} words\n"
+                f"{angle_instruction}"
+                f"\nFormat instructions:\n{format_instructions}\n\n"
+                f"Evidence gathered:\n{evidence_text}\n\n"
+                f"Source quality assessment from the Critic:\n{critique}\n\n"
+                + (
+                    f"IMPORTANT — RE-DRAFT: A previous draft was reviewed and found lacking. "
+                    f"The reviewer's feedback:\n{user_feedback}\n\n"
+                    f"Address all feedback points in this new draft.\n\n"
+                    if user_feedback else ""
+                ) +
+                "Begin your response with a single line in this exact format:\n"
+                "TITLE: [a short, professional title for this alternative paper — 8 words or fewer]\n\n"
+                "Then write the complete paper. Follow these rules exactly:\n"
+                "1. ALTERNATIVE PERSPECTIVE — take a contrarian or minority view on the topic. "
+                "Challenge the mainstream interpretation of the evidence.\n"
+                "2. SAME EVIDENCE — use only the sources provided. Do not invent new facts.\n"
+                "3. SYNTHESISE — organise around key arguments, not question-by-question.\n"
+                "4. STRUCTURE — follow the format instructions above exactly.\n"
+                "5. HEADINGS — use ## for all top-level section headings, ### for subheadings. "
+                "Never use # (single hash). Do NOT repeat the title as a heading.\n"
+                f"6. LENGTH — write a minimum of {target_words:,} words. This is a hard floor.\n"
+                "7. SOURCES — use Weak-rated sources as background only.\n"
+                "8. GAPS — name gaps explicitly rather than skipping them.\n"
+                "9. AUDIENCE — calibrate for the stated audience."
+            ),
+        },
+    ]
+
+    response, model = chain.complete(messages, timeout=120, max_tokens=8000, agent_label="Writer B")
+
+    lines = response.strip().split("\n")
+    paper_title = topic
+    draft_lines = lines
+    if lines and lines[0].startswith("TITLE:"):
+        paper_title = lines[0][6:].strip()
+        draft_lines = lines[1:]
+        while draft_lines and not draft_lines[0].strip():
+            draft_lines = draft_lines[1:]
+
+    return {
+        "draft_b":       "\n".join(draft_lines),
+        "title_b":       paper_title,
+        "model_used_b":  model,
+        "prompt_sent_b": messages,
+    }
+
+
+# ── Agent 5: Debate Judge ─────────────────────────────────────────────────────
+
+def run_debate_judge(state: dict, chain) -> dict:
+    """
+    Reads draft (Writer A) and draft_b (Writer B) and picks the stronger one.
+    Judges on quality of argument and evidence use — not on which view is correct.
+    Returns incorporate list: 2-3 bullet points from the losing draft worth adding.
+
+    Returns: debate_result (dict) with keys:
+        winner, reasoning, incorporate (list), synthesis, model_used, prompt_sent
+    On exception: returns safe default (winner="A").
+    """
+    draft_a = state.get("draft", "")[:2000]
+    draft_b = state.get("draft_b", "")[:2000]
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an editorial judge. You have two drafts on the same topic written "
+                "from different perspectives. Your job is to pick the stronger draft based on: "
+                "quality of argument, use of evidence, logical coherence, and writing clarity. "
+                "You are NOT judging which view is correct — only which draft is better written "
+                "and better argued. After picking a winner, identify 2-3 arguments or points "
+                "from the losing draft that are worth incorporating into the winning draft.\n\n"
+                "Respond in exactly this format — nothing else:\n"
+                "WINNER: [A or B]\n"
+                "REASONING: [2-3 sentences explaining your choice]\n"
+                "INCORPORATE:\n"
+                "- [point 1 from losing draft worth adding]\n"
+                "- [point 2 from losing draft worth adding]\n"
+                "SYNTHESIS: [one sentence describing what a combined draft would achieve]"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"DRAFT A (first 2,000 chars):\n{draft_a}\n\n"
+                f"DRAFT B (first 2,000 chars):\n{draft_b}\n\n"
+                "Which draft is stronger? Follow the response format exactly."
+            ),
+        },
+    ]
+
+    try:
+        response, model = chain.complete(messages, agent_label="Debate Judge")
+    except Exception:
+        return {
+            "debate_result": {
+                "winner":          "A",
+                "reasoning":       "",
+                "incorporate":     [],
+                "synthesis":       "",
+                "model_used":      "",
+                "prompt_sent":     messages,
+            }
+        }
+
+    # Parse the response
+    winner      = "A"
+    reasoning   = ""
+    incorporate = []
+    synthesis   = ""
+
+    in_incorporate = False
+    for line in response.strip().split("\n"):
+        line_s = line.strip()
+        if line_s.upper().startswith("WINNER:"):
+            raw = line_s[7:].strip().upper()
+            winner = "B" if raw.startswith("B") else "A"
+            in_incorporate = False
+        elif line_s.upper().startswith("REASONING:"):
+            reasoning = line_s[10:].strip()
+            in_incorporate = False
+        elif line_s.upper().startswith("INCORPORATE:"):
+            in_incorporate = True
+        elif line_s.upper().startswith("SYNTHESIS:"):
+            synthesis = line_s[10:].strip()
+            in_incorporate = False
+        elif in_incorporate and line_s.startswith("- "):
+            incorporate.append(line_s[2:].strip())
+
+    return {
+        "debate_result": {
+            "winner":      winner,
+            "reasoning":   reasoning,
+            "incorporate": incorporate,
+            "synthesis":   synthesis,
+            "model_used":  model,
+            "prompt_sent": messages,
+        }
+    }
+
+
+# ── Agent 6: Fact Checker ─────────────────────────────────────────────────────
+
+def run_fact_checker(state: dict, chain) -> dict:
+    """
+    Cross-checks factual claims in the draft against gathered source evidence.
+
+    Builds a compressed source summary (top 3 hits per question, 250 chars each,
+    max 25 sources total) and checks the first 4,000 chars of the draft.
+
+    One LLM call: identify 6-10 specific claims, check each against sources.
+    Returns fact_check_result dict with: claims, summary, unsupported_count,
+    weak_count, flagged. flagged=True when unsupported_count > 0.
+
+    On any exception: returns a clean pass so the pipeline never blocks.
+    """
+    draft    = state.get("draft", "")[:4000]
+    research = state.get("research", {})
+    questions = state.get("questions", [])
+
+    # Build compressed source summary
+    source_lines = []
+    total = 0
+    for q in questions:
+        hits = research.get(q, [])[:3]
+        for hit in hits:
+            if total >= 25:
+                break
+            title   = hit.get("title", "Untitled")[:60]
+            content = hit.get("content", "")[:250]
+            source_lines.append(f"- {title}: {content}")
+            total += 1
+        if total >= 25:
+            break
+
+    sources_text = "\n".join(source_lines) if source_lines else "No sources available."
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a fact-checker. You will receive a draft paper and a set of source "
+                "summaries. Identify 6-10 specific factual claims in the draft and check each "
+                "one against the sources provided.\n\n"
+                "Use exactly this format — nothing else:\n"
+                "CLAIM: [the factual claim as stated in the draft]\n"
+                "SOURCE: [title of supporting source, or 'none found']\n"
+                "VERDICT: [Supported / Weak / Unsupported]\n"
+                "...repeat for each claim...\n"
+                "SUMMARY: [one-line overall assessment]\n\n"
+                "Verdict definitions:\n"
+                "Supported: the claim is directly backed by a source in the list.\n"
+                "Weak: partial support — a source is related but does not confirm the claim directly.\n"
+                "Unsupported: no source in the list supports the claim."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Draft (first 4,000 chars):\n{draft}\n\n"
+                f"Source evidence:\n{sources_text}\n\n"
+                "Identify 6-10 specific factual claims and check each one."
+            ),
+        },
+    ]
+
+    try:
+        response, model = chain.complete(messages, agent_label="Fact Checker")
+    except Exception:
+        return {
+            "fact_check_result": {
+                "claims":            [],
+                "summary":           "Fact check skipped due to error.",
+                "unsupported_count": 0,
+                "weak_count":        0,
+                "flagged":           False,
+                "model_used":        "",
+                "prompt_sent":       messages,
+            }
+        }
+
+    # Parse claims
+    claims     = []
+    current    = {}
+    fc_summary = ""
+
+    for line in response.strip().split("\n"):
+        line_s = line.strip()
+        if line_s.upper().startswith("CLAIM:"):
+            if current:
+                claims.append(current)
+            current = {"claim": line_s[6:].strip(), "source": "", "verdict": "Weak"}
+        elif line_s.upper().startswith("SOURCE:"):
+            if current is not None:
+                current["source"] = line_s[7:].strip()
+        elif line_s.upper().startswith("VERDICT:"):
+            if current is not None:
+                raw_verdict = line_s[8:].strip()
+                if "unsupported" in raw_verdict.lower():
+                    current["verdict"] = "Unsupported"
+                elif "supported" in raw_verdict.lower():
+                    current["verdict"] = "Supported"
+                else:
+                    current["verdict"] = "Weak"
+        elif line_s.upper().startswith("SUMMARY:"):
+            fc_summary = line_s[8:].strip()
+
+    if current and current.get("claim"):
+        claims.append(current)
+
+    unsupported_count = sum(1 for c in claims if c.get("verdict") == "Unsupported")
+    weak_count        = sum(1 for c in claims if c.get("verdict") == "Weak")
+
+    return {
+        "fact_check_result": {
+            "claims":            claims,
+            "summary":           fc_summary,
+            "unsupported_count": unsupported_count,
+            "weak_count":        weak_count,
+            "flagged":           unsupported_count > 0,
+            "model_used":        model,
+            "prompt_sent":       messages,
+        }
+    }

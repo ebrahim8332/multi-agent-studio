@@ -23,9 +23,11 @@ Token usage is accumulated in "m01_call_log" by the model chain.
 import re
 import streamlit as st
 import streamlit.components.v1 as components
-from utils.model_client import get_chain, APPROX_PRICING
+from concurrent.futures import ThreadPoolExecutor
+from utils.model_client import get_chain, APPROX_PRICING, SESSION_LOCK_KEY
 from modules.m01_research_assistant.agents import (
-    run_planner, run_researcher, run_critic, run_writer, run_judge, run_editor,
+    run_planner, run_researcher, run_critic, run_writer, run_writer_b,
+    run_debate_judge, run_fact_checker, run_judge, run_editor,
     flag_weak_questions, flag_irrelevant_questions,
 )
 from modules.m01_research_assistant.pipeline import get_initial_state
@@ -33,12 +35,15 @@ from utils.doc_builder import build_research_doc
 
 
 AGENTS = [
-    ("planner",    "Agent 1: Planner",    "Breaks the topic into focused research questions"),
-    ("researcher", "Agent 2: Researcher", "Searches the web for evidence on each question"),
-    ("critic",     "Agent 3: Critic",     "Assesses source quality and flags gaps"),
-    ("writer",     "Agent 4: Writer",     "Drafts the full research paper"),
-    ("judge",      "Agent 5: Judge",      "Evaluates draft quality before the Editor runs"),
-    ("editor",     "Agent 6: Editor",     "Polishes the draft and removes weak language"),
+    ("planner",      "Agent 1: Planner",          "Breaks the topic into focused research questions"),
+    ("researcher",   "Agent 2: Researcher",        "Searches the live web — all questions simultaneously"),
+    ("critic",       "Agent 3: Critic",            "Assesses source quality and flags gaps"),
+    ("writer_a",     "Agent 4A: Writer — Main",    "Drafts the paper from the mainstream perspective"),
+    ("writer_b",     "Agent 4B: Writer — Alt.",    "Drafts the paper from an alternative perspective"),
+    ("debate_judge", "Agent 5: Debate Judge",      "Selects the stronger draft and notes what to incorporate"),
+    ("fact_checker", "Agent 6: Fact Checker",      "Cross-checks draft claims against source evidence"),
+    ("judge",        "Agent 7: Judge",             "Scores the draft on four quality dimensions"),
+    ("editor",       "Agent 8: Editor",            "Polishes the draft and removes weak language"),
 ]
 
 MAX_RESEARCHER_RETRIES = 2
@@ -88,7 +93,7 @@ _STATE_KEYS = [
     "m01_flagged_questions", "m01_researcher_attempt",
     "m01_call_log",
     "m01_writer_attempt", "m01_writer_feedback", "m01_judge_editing",
-    "m01_judge_result",
+    "m01_judge_result", "m01_fact_check_result",
 ]
 
 
@@ -152,16 +157,17 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
 
 def _researcher_parallel_panel(placeholder, status: str, running: bool = False,
                                 provider_stats: dict = None, total_sources: int = 0,
-                                prompt: list = None) -> None:
+                                prompt: list = None, enriched_count: int = 0) -> None:
     """
     Renders the Researcher panel with a side-by-side Tavily | Exa layout.
     Shows live 'Searching...' when running=True, and result counts when done.
     provider_stats: {query: {"tavily": N, "exa": N, "serper": N}}
+    enriched_count: number of sources enriched with full article text via Tavily Extract
     """
     with placeholder.container():
         col_label, col_status = st.columns([3, 1])
         with col_label:
-            st.markdown("**Agent 2: Researcher**  \nSearches the web for evidence on each question")
+            st.markdown("**Agent 2: Researcher**  \nSearches the live web — all questions simultaneously")
         with col_status:
             st.markdown(status)
 
@@ -204,7 +210,10 @@ def _researcher_parallel_panel(placeholder, status: str, running: bool = False,
             if serper_total > 0:
                 st.caption(f"Serper fallback used for {serper_total} result(s) — primary engines returned nothing for some queries.")
 
+            st.caption(f"⚡ All questions searched simultaneously")
             st.caption(f"{total_sources} unique sources after deduplication")
+            if enriched_count > 0:
+                st.caption(f"📄 {enriched_count} sources enriched with full article text (Tavily Extract)")
 
         if prompt:
             with st.expander("🔍 View prompt sent to AI", expanded=False):
@@ -284,7 +293,10 @@ div[data-baseweb="select"] * { cursor: pointer; }
     fk = st.session_state["m01_form_key"]
 
     phase  = st.session_state.get("m01_phase", "idle")
-    locked = phase in ("running", "critic_running", "writing", "judge_running", "editor_running")
+    locked = phase in (
+        "running", "critic_running", "writing_parallel",
+        "fact_check_running", "judge_running", "editor_running",
+    )
 
     # ── Input form ────────────────────────────────────────────────────────────
     topic = st.text_area(
@@ -338,24 +350,32 @@ div[data-baseweb="select"] * { cursor: pointer; }
     st.markdown("---")
 
     # ── Placeholders (rendered top to bottom in layout order) ─────────────────
-    planner_ph      = st.empty()
-    approval_ph     = st.empty()
-    researcher_ph   = st.empty()
-    quality_gate_ph = st.empty()
-    critic_ph       = st.empty()
-    critic_gate_ph  = st.empty()   # checkpoint between Critic and Writer
-    writer_ph       = st.empty()
-    judge_ph        = st.empty()
-    judge_gate_ph   = st.empty()   # checkpoint between Judge and Editor
-    editor_ph       = st.empty()
+    planner_ph         = st.empty()
+    approval_ph        = st.empty()
+    researcher_ph      = st.empty()
+    quality_gate_ph    = st.empty()
+    critic_ph          = st.empty()
+    critic_gate_ph     = st.empty()
+    writer_a_ph        = st.empty()
+    writer_b_ph        = st.empty()
+    debate_judge_ph    = st.empty()
+    debate_gate_ph     = st.empty()
+    fact_checker_ph    = st.empty()
+    fact_check_gate_ph = st.empty()
+    judge_ph           = st.empty()
+    judge_gate_ph      = st.empty()
+    editor_ph          = st.empty()
 
     ph = {
-        "planner":    planner_ph,
-        "researcher": researcher_ph,
-        "critic":     critic_ph,
-        "writer":     writer_ph,
-        "judge":      judge_ph,
-        "editor":     editor_ph,
+        "planner":      planner_ph,
+        "researcher":   researcher_ph,
+        "critic":       critic_ph,
+        "writer_a":     writer_a_ph,
+        "writer_b":     writer_b_ph,
+        "debate_judge": debate_judge_ph,
+        "fact_checker": fact_checker_ph,
+        "judge":        judge_ph,
+        "editor":       editor_ph,
     }
 
     # ── Run clicked ───────────────────────────────────────────────────────────
@@ -371,7 +391,8 @@ div[data-baseweb="select"] * { cursor: pointer; }
     # ══════════════════════════════════════════════════════════════════════════
     if phase == "idle":
         for name, label, desc in AGENTS:
-            _agent_panel(ph[name], label, desc, STATUS_WAITING)
+            if name in ph:
+                _agent_panel(ph[name], label, desc, STATUS_WAITING)
         return
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -450,7 +471,8 @@ div[data-baseweb="select"] * { cursor: pointer; }
                         st.rerun()
 
         for name, label, desc in AGENTS[1:]:
-            _agent_panel(ph[name], label, desc, STATUS_WAITING)
+            if name in ph:
+                _agent_panel(ph[name], label, desc, STATUS_WAITING)
         return
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -474,7 +496,8 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
         # Show all downstream panels as Waiting
         for name, label, desc in AGENTS[1:]:
-            _agent_panel(ph[name], label, desc, STATUS_WAITING)
+            if name in ph:
+                _agent_panel(ph[name], label, desc, STATUS_WAITING)
 
         full_state    = dict(pending)
         agent_outputs = st.session_state.get("m01_agent_outputs", {"planner": {"output": planner_out, "model": p_model, "prompt": p_prompt}})
@@ -483,13 +506,14 @@ div[data-baseweb="select"] * { cursor: pointer; }
         # ── Researcher ────────────────────────────────────────────────────────
         _researcher_parallel_panel(researcher_ph, STATUS_RUNNING, running=True)
         try:
-            with st.spinner("Tavily and Exa searching simultaneously... (10–20 seconds)"):
+            with st.spinner("Searching all questions simultaneously with Tavily + Exa... (10–20 seconds)"):
                 result = run_researcher(full_state)
             full_state.update(result)
         except Exception as e:
             _agent_panel(researcher_ph, "Agent 2: Researcher", "", STATUS_FAILED)
             for name, label, desc in AGENTS[2:]:
-                _agent_panel(ph[name], label, desc, STATUS_FAILED)
+                if name in ph:
+                    _agent_panel(ph[name], label, desc, STATUS_FAILED)
             st.error(f"Researcher failed: {e}")
             return
 
@@ -497,18 +521,21 @@ div[data-baseweb="select"] * { cursor: pointer; }
         researcher_model  = "Tavily + Exa"
         researcher_prompt = result.get("prompt_sent", [])
         researcher_stats  = full_state.get("provider_stats", {})
+        enriched_count    = result.get("enriched_count", 0)
         agent_outputs["researcher"] = {
-            "output":        researcher_out,
-            "model":         researcher_model,
-            "prompt":        researcher_prompt,
-            "stats":         researcher_stats,
-            "total_sources": len(full_state.get("sources", [])),
+            "output":          researcher_out,
+            "model":           researcher_model,
+            "prompt":          researcher_prompt,
+            "stats":           researcher_stats,
+            "total_sources":   len(full_state.get("sources", [])),
+            "enriched_count":  enriched_count,
         }
         _researcher_parallel_panel(
             researcher_ph, STATUS_COMPLETE,
             provider_stats=researcher_stats,
             total_sources=len(full_state.get("sources", [])),
             prompt=researcher_prompt,
+            enriched_count=enriched_count,
         )
 
         # ── Quality gate ──────────────────────────────────────────────────────
@@ -531,18 +558,21 @@ div[data-baseweb="select"] * { cursor: pointer; }
             researcher_out    = _format_researcher_output(full_state)
             researcher_prompt = result.get("prompt_sent", [])
             researcher_stats  = full_state.get("provider_stats", {})
+            enriched_count    = result.get("enriched_count", 0)
             agent_outputs["researcher"] = {
-                "output":        researcher_out,
-                "model":         f"{researcher_model} · {researcher_attempt} attempts",
-                "prompt":        researcher_prompt,
-                "stats":         researcher_stats,
-                "total_sources": len(full_state.get("sources", [])),
+                "output":         researcher_out,
+                "model":          f"{researcher_model} · {researcher_attempt} attempts",
+                "prompt":         researcher_prompt,
+                "stats":          researcher_stats,
+                "total_sources":  len(full_state.get("sources", [])),
+                "enriched_count": enriched_count,
             }
             _researcher_parallel_panel(
                 researcher_ph, STATUS_COMPLETE,
                 provider_stats=researcher_stats,
                 total_sources=len(full_state.get("sources", [])),
                 prompt=researcher_prompt,
+                enriched_count=enriched_count,
             )
             flagged = _combined_flag_check(
                 full_state, chain, researcher_ph, quality_gate_ph,
@@ -612,7 +642,8 @@ div[data-baseweb="select"] * { cursor: pointer; }
                     st.rerun()
 
         for name, label, desc in AGENTS[2:]:
-            _agent_panel(ph[name], label, desc, STATUS_WAITING)
+            if name in ph:
+                _agent_panel(ph[name], label, desc, STATUS_WAITING)
         return
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -643,7 +674,8 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Assessing source quality and flagging gaps",
                      STATUS_RUNNING, running=True)
         for name, label, desc in AGENTS[3:]:
-            _agent_panel(ph[name], label, desc, STATUS_WAITING)
+            if name in ph:
+                _agent_panel(ph[name], label, desc, STATUS_WAITING)
 
         full_state = dict(pending)
         chain = get_chain(st.session_state)
@@ -654,7 +686,8 @@ div[data-baseweb="select"] * { cursor: pointer; }
         except Exception as e:
             _agent_panel(critic_ph, "Agent 3: Critic", "", STATUS_FAILED)
             for name, label, desc in AGENTS[3:]:
-                _agent_panel(ph[name], label, desc, STATUS_FAILED)
+                if name in ph:
+                    _agent_panel(ph[name], label, desc, STATUS_FAILED)
             st.error(f"Critic failed: {e}")
             return
 
@@ -735,7 +768,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
         if all_strong:
             # No human decision needed — all sources rated Strong, proceed automatically
-            st.session_state["m01_phase"] = "writing"
+            st.session_state["m01_phase"] = "writing_parallel"
             st.rerun()
             return
 
@@ -795,7 +828,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
             col1, col2 = st.columns([1, 1])
             with col1:
                 if st.button("Proceed to Writer →", type="primary", key="m01_critic_proceed_btn"):
-                    st.session_state["m01_phase"] = "writing"
+                    st.session_state["m01_phase"] = "writing_parallel"
                     st.rerun()
             with col2:
                 if st.button("Stop here", key="m01_critic_stop_btn"):
@@ -803,16 +836,17 @@ div[data-baseweb="select"] * { cursor: pointer; }
                         st.session_state.pop(key, None)
                     st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
                     st.rerun()
-            st.caption("The Writer will not start until you approve.")
+            st.caption("The Writers will not start until you approve.")
 
         for name, label, desc in AGENTS[3:]:
-            _agent_panel(ph[name], label, desc, STATUS_WAITING)
+            if name in ph:
+                _agent_panel(ph[name], label, desc, STATUS_WAITING)
         return
 
     # ══════════════════════════════════════════════════════════════════════════
-    # PHASE: writing  (Writer only — then transitions to judge_running)
+    # PHASE: writing_parallel  (Writer A + Writer B in parallel, then Debate Judge)
     # ══════════════════════════════════════════════════════════════════════════
-    if phase == "writing":
+    if phase == "writing_parallel":
         pending          = st.session_state.get("m01_pending_state", {})
         questions        = pending.get("questions", [])
         p_model          = st.session_state.get("m01_planner_model", "")
@@ -822,15 +856,229 @@ div[data-baseweb="select"] * { cursor: pointer; }
         writer_feedback  = st.session_state.get("m01_writer_feedback", "")
         writer_attempt   = st.session_state.get("m01_writer_attempt", 1)
 
-        attempt_note      = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
-        w_attempt_note    = f" · re-draft {writer_attempt}" if writer_attempt > 1 else ""
-        planner_out       = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-        researcher_out    = agent_outputs.get("researcher", {}).get("output", "")
-        researcher_model  = agent_outputs.get("researcher", {}).get("model", "")
-        researcher_prompt = agent_outputs.get("researcher", {}).get("prompt", [])
+        attempt_note     = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
+        w_attempt_note   = f" · re-draft {writer_attempt}" if writer_attempt > 1 else ""
+        planner_out      = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
         critic_out    = agent_outputs.get("critic", {}).get("output", "")
         critic_model  = agent_outputs.get("critic", {}).get("model", "")
         critic_prompt = agent_outputs.get("critic", {}).get("prompt", [])
+        full_state = dict(pending)
+
+        _agent_panel(planner_ph, "Agent 1: Planner",
+                     "Breaks the topic into focused research questions",
+                     STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
+        approval_ph.empty()
+        _render_researcher_done(researcher_ph, agent_outputs)
+        quality_gate_ph.empty()
+        _agent_panel(critic_ph, "Agent 3: Critic",
+                     "Assesses source quality and flags gaps",
+                     STATUS_COMPLETE, output=critic_out, model=critic_model, prompt=critic_prompt)
+        critic_gate_ph.empty()
+        _agent_panel(writer_a_ph, "Agent 4A: Writer — Main",
+                     f"Drafting from mainstream perspective{w_attempt_note}",
+                     STATUS_RUNNING, running=True)
+        _agent_panel(writer_b_ph, "Agent 4B: Writer — Alt.",
+                     f"Drafting from alternative perspective{w_attempt_note}",
+                     STATUS_RUNNING, running=True)
+        _agent_panel(debate_judge_ph, "Agent 5: Debate Judge",
+                     "Selects the stronger draft and notes what to incorporate", STATUS_WAITING)
+        _agent_panel(fact_checker_ph, "Agent 6: Fact Checker",
+                     "Cross-checks draft claims against source evidence", STATUS_WAITING)
+        _agent_panel(judge_ph,  "Agent 7: Judge",  "Scores the draft on four quality dimensions", STATUS_WAITING)
+        _agent_panel(editor_ph, "Agent 8: Editor", "Polishes the draft and removes weak language", STATUS_WAITING)
+
+        # Thread safety: separate state dicts so concurrent chain calls do not share state
+        log_before = list(st.session_state.get("m01_call_log", []))
+
+        state_a_ss = {k: v for k, v in st.session_state.items()}
+        state_a_ss["m01_call_log"] = []
+
+        state_b_ss = {k: v for k, v in st.session_state.items()}
+        state_b_ss["m01_call_log"] = []
+
+        chain_a = get_chain(state_a_ss)
+        chain_b = get_chain(state_b_ss)
+
+        result_a = None
+        result_b = None
+        writer_error = None
+
+        try:
+            with st.spinner("Both writers drafting simultaneously — this takes 30–90 seconds..."):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    fut_a = executor.submit(run_writer,   full_state, chain_a, writer_feedback)
+                    fut_b = executor.submit(run_writer_b, full_state, chain_b, writer_feedback)
+                    result_a = fut_a.result(timeout=180)
+                    result_b = fut_b.result(timeout=180)
+        except Exception as e:
+            writer_error = str(e)
+
+        if writer_error or result_a is None:
+            _agent_panel(writer_a_ph, "Agent 4A: Writer — Main", "", STATUS_FAILED)
+            _agent_panel(writer_b_ph, "Agent 4B: Writer — Alt.", "", STATUS_FAILED)
+            _agent_panel(debate_judge_ph, "Agent 5: Debate Judge", "", STATUS_FAILED)
+            _agent_panel(fact_checker_ph, "Agent 6: Fact Checker", "", STATUS_FAILED)
+            _agent_panel(judge_ph,  "Agent 7: Judge",  "", STATUS_FAILED)
+            _agent_panel(editor_ph, "Agent 8: Editor", "", STATUS_FAILED)
+            st.error(f"Writers failed: {writer_error}")
+            return
+
+        # Merge call logs from both writer threads
+        log_a_new = state_a_ss.get("m01_call_log", [])
+        log_b_new = state_b_ss.get("m01_call_log", [])
+        st.session_state["m01_call_log"] = log_before + log_a_new + log_b_new
+
+        # Use chain_a's locked model as the main model lock
+        if state_a_ss.get(SESSION_LOCK_KEY) is not None:
+            st.session_state[SESSION_LOCK_KEY] = state_a_ss[SESSION_LOCK_KEY]
+            st.session_state["locked_model_name"] = state_a_ss.get("locked_model_name", "")
+
+        # Update full_state with both writers' results
+        full_state.update(result_a)
+        full_state["draft_b"] = result_b.get("draft_b", "")
+        full_state["title_b"] = result_b.get("title_b", "")
+
+        writer_a_out   = _format_agent_output("writer", result_a, full_state)
+        writer_a_model = result_a.get("model_used", "")
+        writer_a_prompt = result_a.get("prompt_sent", [])
+        writer_b_out   = _format_agent_output_b(result_b)
+        writer_b_model = result_b.get("model_used_b", "")
+        writer_b_prompt = result_b.get("prompt_sent_b", [])
+
+        agent_outputs["writer_a"] = {
+            "output": writer_a_out,
+            "model":  writer_a_model + w_attempt_note,
+            "prompt": writer_a_prompt,
+        }
+        agent_outputs["writer_b"] = {
+            "output": writer_b_out,
+            "model":  writer_b_model + w_attempt_note,
+            "prompt": writer_b_prompt,
+        }
+
+        # Run Debate Judge
+        _agent_panel(writer_a_ph, "Agent 4A: Writer — Main",
+                     "Drafted from mainstream perspective",
+                     STATUS_COMPLETE, output=writer_a_out, model=writer_a_model + w_attempt_note,
+                     prompt=writer_a_prompt)
+        _agent_panel(writer_b_ph, "Agent 4B: Writer — Alt.",
+                     "Drafted from alternative perspective",
+                     STATUS_COMPLETE, output=writer_b_out, model=writer_b_model + w_attempt_note,
+                     prompt=writer_b_prompt)
+        _agent_panel(debate_judge_ph, "Agent 5: Debate Judge",
+                     "Selecting the stronger draft...", STATUS_RUNNING, running=True)
+
+        chain = get_chain(st.session_state)
+        try:
+            debate_result_dict = run_debate_judge(full_state, chain)
+        except Exception:
+            debate_result_dict = {
+                "debate_result": {"winner": "A", "reasoning": "", "incorporate": [], "synthesis": "", "model_used": "", "prompt_sent": []}
+            }
+        full_state.update(debate_result_dict)
+
+        debate_result = full_state.get("debate_result", {})
+        # If Writer B won, swap its draft into the main draft slot
+        if debate_result.get("winner") == "B" and full_state.get("draft_b"):
+            full_state["draft"] = full_state["draft_b"]
+            full_state["title"] = full_state.get("title_b", full_state.get("title", ""))
+
+        dj_model  = debate_result.get("model_used", "")
+        dj_prompt = debate_result.get("prompt_sent", [])
+        dj_out    = _format_debate_output(debate_result)
+        agent_outputs["debate_judge"] = {"output": dj_out, "model": dj_model, "prompt": dj_prompt}
+
+        st.session_state["m01_pending_state"]   = full_state
+        st.session_state["m01_agent_outputs"]   = agent_outputs
+        st.session_state["m01_writer_feedback"] = ""
+        st.session_state["m01_phase"] = "debate_done"
+        st.rerun()
+        return
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE: debate_done  (Debate Judge checkpoint)
+    # ══════════════════════════════════════════════════════════════════════════
+    if phase == "debate_done":
+        pending       = st.session_state.get("m01_pending_state", {})
+        questions     = pending.get("questions", [])
+        p_model       = st.session_state.get("m01_planner_model", "")
+        p_prompt      = st.session_state.get("m01_planner_prompt", [])
+        planner_attempt = st.session_state.get("m01_planner_attempt", 1)
+        agent_outputs = st.session_state.get("m01_agent_outputs", {})
+
+        attempt_note  = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
+        planner_out   = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        critic_out    = agent_outputs.get("critic",       {}).get("output", "")
+        critic_model  = agent_outputs.get("critic",       {}).get("model",  "")
+        critic_prompt = agent_outputs.get("critic",       {}).get("prompt", [])
+        wa_out    = agent_outputs.get("writer_a",     {}).get("output", "")
+        wa_model  = agent_outputs.get("writer_a",     {}).get("model",  "")
+        wa_prompt = agent_outputs.get("writer_a",     {}).get("prompt", [])
+        wb_out    = agent_outputs.get("writer_b",     {}).get("output", "")
+        wb_model  = agent_outputs.get("writer_b",     {}).get("model",  "")
+        wb_prompt = agent_outputs.get("writer_b",     {}).get("prompt", [])
+        dj_out    = agent_outputs.get("debate_judge", {}).get("output", "")
+        dj_model  = agent_outputs.get("debate_judge", {}).get("model",  "")
+        dj_prompt = agent_outputs.get("debate_judge", {}).get("prompt", [])
+        debate_result = pending.get("debate_result", {})
+
+        _agent_panel(planner_ph, "Agent 1: Planner",
+                     "Breaks the topic into focused research questions",
+                     STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
+        approval_ph.empty()
+        _render_researcher_done(researcher_ph, agent_outputs)
+        quality_gate_ph.empty()
+        _agent_panel(critic_ph, "Agent 3: Critic",
+                     "Assesses source quality and flags gaps",
+                     STATUS_COMPLETE, output=critic_out, model=critic_model, prompt=critic_prompt)
+        critic_gate_ph.empty()
+        _agent_panel(writer_a_ph, "Agent 4A: Writer — Main",
+                     "Drafted from mainstream perspective",
+                     STATUS_COMPLETE, output=wa_out, model=wa_model, prompt=wa_prompt)
+        _agent_panel(writer_b_ph, "Agent 4B: Writer — Alt.",
+                     "Drafted from alternative perspective",
+                     STATUS_COMPLETE, output=wb_out, model=wb_model, prompt=wb_prompt)
+        _agent_panel(debate_judge_ph, "Agent 5: Debate Judge",
+                     "Selects the stronger draft and notes what to incorporate",
+                     STATUS_COMPLETE, output=dj_out, model=dj_model, expanded=True, prompt=dj_prompt)
+        _agent_panel(fact_checker_ph, "Agent 6: Fact Checker",
+                     "Cross-checks draft claims against source evidence", STATUS_WAITING)
+        _agent_panel(judge_ph,  "Agent 7: Judge",  "Scores the draft on four quality dimensions", STATUS_WAITING)
+        _agent_panel(editor_ph, "Agent 8: Editor", "Polishes the draft and removes weak language", STATUS_WAITING)
+
+        with debate_gate_ph.container():
+            st.info(_format_debate_output(debate_result))
+            if st.button("Continue to Fact Checker →", type="primary", key="m01_debate_continue_btn"):
+                st.session_state["m01_phase"] = "fact_check_running"
+                st.rerun()
+
+        return
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE: fact_check_running
+    # ══════════════════════════════════════════════════════════════════════════
+    if phase == "fact_check_running":
+        pending       = st.session_state.get("m01_pending_state", {})
+        questions     = pending.get("questions", [])
+        p_model       = st.session_state.get("m01_planner_model", "")
+        p_prompt      = st.session_state.get("m01_planner_prompt", [])
+        planner_attempt = st.session_state.get("m01_planner_attempt", 1)
+        agent_outputs = st.session_state.get("m01_agent_outputs", {})
+
+        attempt_note  = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
+        planner_out   = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        critic_out    = agent_outputs.get("critic",       {}).get("output", "")
+        critic_model  = agent_outputs.get("critic",       {}).get("model",  "")
+        critic_prompt = agent_outputs.get("critic",       {}).get("prompt", [])
+        wa_out    = agent_outputs.get("writer_a",     {}).get("output", "")
+        wa_model  = agent_outputs.get("writer_a",     {}).get("model",  "")
+        wa_prompt = agent_outputs.get("writer_a",     {}).get("prompt", [])
+        wb_out    = agent_outputs.get("writer_b",     {}).get("output", "")
+        wb_model  = agent_outputs.get("writer_b",     {}).get("model",  "")
+        wb_prompt = agent_outputs.get("writer_b",     {}).get("prompt", [])
+        dj_out    = agent_outputs.get("debate_judge", {}).get("output", "")
+        dj_model  = agent_outputs.get("debate_judge", {}).get("model",  "")
+        dj_prompt = agent_outputs.get("debate_judge", {}).get("prompt", [])
         full_state = dict(pending)
         chain = get_chain(st.session_state)
 
@@ -844,36 +1092,156 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Assesses source quality and flags gaps",
                      STATUS_COMPLETE, output=critic_out, model=critic_model, prompt=critic_prompt)
         critic_gate_ph.empty()
-        _agent_panel(writer_ph, "Agent 4: Writer",
-                     f"Drafting the research paper{w_attempt_note}",
+        _agent_panel(writer_a_ph, "Agent 4A: Writer — Main",
+                     "Drafted from mainstream perspective",
+                     STATUS_COMPLETE, output=wa_out, model=wa_model, prompt=wa_prompt)
+        _agent_panel(writer_b_ph, "Agent 4B: Writer — Alt.",
+                     "Drafted from alternative perspective",
+                     STATUS_COMPLETE, output=wb_out, model=wb_model, prompt=wb_prompt)
+        _agent_panel(debate_judge_ph, "Agent 5: Debate Judge",
+                     "Selects the stronger draft and notes what to incorporate",
+                     STATUS_COMPLETE, output=dj_out, model=dj_model, prompt=dj_prompt)
+        debate_gate_ph.empty()
+        _agent_panel(fact_checker_ph, "Agent 6: Fact Checker",
+                     "Cross-checking draft claims against sources...",
                      STATUS_RUNNING, running=True)
-        _agent_panel(judge_ph,  "Agent 5: Judge",
-                     "Evaluates draft quality before the Editor runs", STATUS_WAITING)
-        _agent_panel(editor_ph, "Agent 6: Editor",
-                     "Polishes the draft and removes weak language",   STATUS_WAITING)
+        _agent_panel(judge_ph,  "Agent 7: Judge",  "Scores the draft on four quality dimensions", STATUS_WAITING)
+        _agent_panel(editor_ph, "Agent 8: Editor", "Polishes the draft and removes weak language", STATUS_WAITING)
 
         try:
-            with st.spinner("Writing the research paper... (this can take 30–60 seconds)"):
-                result = run_writer(full_state, chain, user_feedback=writer_feedback)
-            full_state.update(result)
-        except Exception as e:
-            _agent_panel(writer_ph, "Agent 4: Writer", "", STATUS_FAILED)
-            _agent_panel(judge_ph,  "Agent 5: Judge",  "", STATUS_FAILED)
-            _agent_panel(editor_ph, "Agent 6: Editor", "", STATUS_FAILED)
-            st.error(f"Writer failed: {e}")
-            return
+            with st.spinner("Fact-checking draft claims against source evidence..."):
+                fc_result_dict = run_fact_checker(full_state, chain)
+        except Exception:
+            fc_result_dict = {
+                "fact_check_result": {
+                    "claims": [], "summary": "", "unsupported_count": 0,
+                    "weak_count": 0, "flagged": False, "model_used": "", "prompt_sent": [],
+                }
+            }
+        full_state.update(fc_result_dict)
+        fc_result = full_state.get("fact_check_result", {})
 
-        writer_out    = _format_agent_output("writer", result, full_state)
-        writer_model  = result.get("model_used", "")
-        writer_prompt = result.get("prompt_sent", [])
-        agent_outputs["writer"] = {"output": writer_out, "model": writer_model + w_attempt_note,
-                                   "prompt": writer_prompt}
+        fc_out    = _format_fact_check_output(fc_result)
+        fc_model  = fc_result.get("model_used", "")
+        fc_prompt = fc_result.get("prompt_sent", [])
+        agent_outputs["fact_checker"] = {"output": fc_out, "model": fc_model, "prompt": fc_prompt}
 
         st.session_state["m01_pending_state"]   = full_state
         st.session_state["m01_agent_outputs"]   = agent_outputs
-        st.session_state["m01_writer_feedback"] = ""   # clear after use
-        st.session_state["m01_phase"] = "judge_running"
+        st.session_state["m01_fact_check_result"] = fc_result
+        st.session_state["m01_phase"] = "fact_check_done"
         st.rerun()
+        return
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PHASE: fact_check_done  (smart checkpoint)
+    # ══════════════════════════════════════════════════════════════════════════
+    if phase == "fact_check_done":
+        pending       = st.session_state.get("m01_pending_state", {})
+        questions     = pending.get("questions", [])
+        p_model       = st.session_state.get("m01_planner_model", "")
+        p_prompt      = st.session_state.get("m01_planner_prompt", [])
+        planner_attempt = st.session_state.get("m01_planner_attempt", 1)
+        agent_outputs = st.session_state.get("m01_agent_outputs", {})
+        fc_result     = st.session_state.get("m01_fact_check_result", {})
+        writer_attempt = st.session_state.get("m01_writer_attempt", 1)
+
+        attempt_note  = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
+        planner_out   = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        critic_out    = agent_outputs.get("critic",       {}).get("output", "")
+        critic_model  = agent_outputs.get("critic",       {}).get("model",  "")
+        critic_prompt = agent_outputs.get("critic",       {}).get("prompt", [])
+        wa_out    = agent_outputs.get("writer_a",     {}).get("output", "")
+        wa_model  = agent_outputs.get("writer_a",     {}).get("model",  "")
+        wa_prompt = agent_outputs.get("writer_a",     {}).get("prompt", [])
+        wb_out    = agent_outputs.get("writer_b",     {}).get("output", "")
+        wb_model  = agent_outputs.get("writer_b",     {}).get("model",  "")
+        wb_prompt = agent_outputs.get("writer_b",     {}).get("prompt", [])
+        dj_out    = agent_outputs.get("debate_judge", {}).get("output", "")
+        dj_model  = agent_outputs.get("debate_judge", {}).get("model",  "")
+        dj_prompt = agent_outputs.get("debate_judge", {}).get("prompt", [])
+        fc_out    = agent_outputs.get("fact_checker", {}).get("output", "")
+        fc_model  = agent_outputs.get("fact_checker", {}).get("model",  "")
+        fc_prompt = agent_outputs.get("fact_checker", {}).get("prompt", [])
+
+        _agent_panel(planner_ph, "Agent 1: Planner",
+                     "Breaks the topic into focused research questions",
+                     STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
+        approval_ph.empty()
+        _render_researcher_done(researcher_ph, agent_outputs)
+        quality_gate_ph.empty()
+        _agent_panel(critic_ph, "Agent 3: Critic",
+                     "Assesses source quality and flags gaps",
+                     STATUS_COMPLETE, output=critic_out, model=critic_model, prompt=critic_prompt)
+        critic_gate_ph.empty()
+        _agent_panel(writer_a_ph, "Agent 4A: Writer — Main",
+                     "Drafted from mainstream perspective",
+                     STATUS_COMPLETE, output=wa_out, model=wa_model, prompt=wa_prompt)
+        _agent_panel(writer_b_ph, "Agent 4B: Writer — Alt.",
+                     "Drafted from alternative perspective",
+                     STATUS_COMPLETE, output=wb_out, model=wb_model, prompt=wb_prompt)
+        _agent_panel(debate_judge_ph, "Agent 5: Debate Judge",
+                     "Selects the stronger draft and notes what to incorporate",
+                     STATUS_COMPLETE, output=dj_out, model=dj_model, prompt=dj_prompt)
+        debate_gate_ph.empty()
+        _agent_panel(fact_checker_ph, "Agent 6: Fact Checker",
+                     "Cross-checks draft claims against source evidence",
+                     STATUS_COMPLETE, output=fc_out, model=fc_model, expanded=True, prompt=fc_prompt)
+        _agent_panel(judge_ph,  "Agent 7: Judge",  "Scores the draft on four quality dimensions", STATUS_WAITING)
+        _agent_panel(editor_ph, "Agent 8: Editor", "Polishes the draft and removes weak language", STATUS_WAITING)
+
+        flagged           = fc_result.get("flagged", False)
+        unsupported_count = fc_result.get("unsupported_count", 0)
+
+        if not flagged:
+            # Auto-proceed: no unsupported claims
+            st.session_state["m01_phase"] = "judge_running"
+            st.rerun()
+            return
+
+        # Unsupported claims found — show checkpoint
+        with fact_check_gate_ph.container():
+            st.warning(
+                f"Fact check: {unsupported_count} claim(s) not supported by source evidence. "
+                "Review before proceeding."
+            )
+            # Claim table
+            claims = fc_result.get("claims", [])
+            for claim in claims:
+                verdict = claim.get("verdict", "Weak")
+                icon    = "🟢" if verdict == "Supported" else ("🟡" if verdict == "Weak" else "🔴")
+                c_text  = claim.get("claim", "")[:100]
+                source  = claim.get("source", "")[:60]
+                col_icon, col_verdict, col_claim, col_source = st.columns([0.3, 1, 3, 2])
+                with col_icon:
+                    st.markdown(icon)
+                with col_verdict:
+                    st.caption(f"**{verdict}**")
+                with col_claim:
+                    st.caption(c_text)
+                with col_source:
+                    st.caption(source)
+
+            st.markdown("")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button("Proceed to Judge →", type="primary", key="m01_fc_proceed_btn"):
+                    st.session_state["m01_phase"] = "judge_running"
+                    st.rerun()
+            with col2:
+                if st.button("Re-draft with fact check note", key="m01_fc_redraft_btn"):
+                    feedback_note = _build_fact_check_feedback(fc_result)
+                    st.session_state["m01_writer_feedback"] = feedback_note
+                    st.session_state["m01_writer_attempt"]  = writer_attempt + 1
+                    st.session_state["m01_phase"] = "writing_parallel"
+                    st.rerun()
+            with col3:
+                if st.button("Stop here", key="m01_fc_stop_btn"):
+                    for key in _STATE_KEYS:
+                        st.session_state.pop(key, None)
+                    st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
+                    st.rerun()
+
         return
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -886,19 +1254,24 @@ div[data-baseweb="select"] * { cursor: pointer; }
         p_prompt         = st.session_state.get("m01_planner_prompt", [])
         planner_attempt  = st.session_state.get("m01_planner_attempt", 1)
         agent_outputs    = st.session_state.get("m01_agent_outputs", {})
-        writer_attempt   = st.session_state.get("m01_writer_attempt", 1)
 
-        attempt_note     = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
-        planner_out      = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-        researcher_out   = agent_outputs.get("researcher", {}).get("output", "")
-        researcher_model = agent_outputs.get("researcher", {}).get("model", "")
-        researcher_prompt = agent_outputs.get("researcher", {}).get("prompt", [])
-        critic_out    = agent_outputs.get("critic", {}).get("output", "")
-        critic_model  = agent_outputs.get("critic", {}).get("model", "")
-        critic_prompt = agent_outputs.get("critic", {}).get("prompt", [])
-        writer_out    = agent_outputs.get("writer", {}).get("output", "")
-        writer_model  = agent_outputs.get("writer", {}).get("model", "")
-        writer_prompt = agent_outputs.get("writer", {}).get("prompt", [])
+        attempt_note  = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
+        planner_out   = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        critic_out    = agent_outputs.get("critic",       {}).get("output", "")
+        critic_model  = agent_outputs.get("critic",       {}).get("model",  "")
+        critic_prompt = agent_outputs.get("critic",       {}).get("prompt", [])
+        wa_out    = agent_outputs.get("writer_a",     {}).get("output", "")
+        wa_model  = agent_outputs.get("writer_a",     {}).get("model",  "")
+        wa_prompt = agent_outputs.get("writer_a",     {}).get("prompt", [])
+        wb_out    = agent_outputs.get("writer_b",     {}).get("output", "")
+        wb_model  = agent_outputs.get("writer_b",     {}).get("model",  "")
+        wb_prompt = agent_outputs.get("writer_b",     {}).get("prompt", [])
+        dj_out    = agent_outputs.get("debate_judge", {}).get("output", "")
+        dj_model  = agent_outputs.get("debate_judge", {}).get("model",  "")
+        dj_prompt = agent_outputs.get("debate_judge", {}).get("prompt", [])
+        fc_out    = agent_outputs.get("fact_checker", {}).get("output", "")
+        fc_model  = agent_outputs.get("fact_checker", {}).get("model",  "")
+        fc_prompt = agent_outputs.get("fact_checker", {}).get("prompt", [])
         full_state = dict(pending)
         chain = get_chain(st.session_state)
 
@@ -912,20 +1285,31 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Assesses source quality and flags gaps",
                      STATUS_COMPLETE, output=critic_out, model=critic_model, prompt=critic_prompt)
         critic_gate_ph.empty()
-        _agent_panel(writer_ph, "Agent 4: Writer",
-                     "Drafts the full research paper",
-                     STATUS_COMPLETE, output=writer_out, model=writer_model, prompt=writer_prompt)
-        _agent_panel(judge_ph, "Agent 5: Judge",
+        _agent_panel(writer_a_ph, "Agent 4A: Writer — Main",
+                     "Drafted from mainstream perspective",
+                     STATUS_COMPLETE, output=wa_out, model=wa_model, prompt=wa_prompt)
+        _agent_panel(writer_b_ph, "Agent 4B: Writer — Alt.",
+                     "Drafted from alternative perspective",
+                     STATUS_COMPLETE, output=wb_out, model=wb_model, prompt=wb_prompt)
+        _agent_panel(debate_judge_ph, "Agent 5: Debate Judge",
+                     "Selects the stronger draft and notes what to incorporate",
+                     STATUS_COMPLETE, output=dj_out, model=dj_model, prompt=dj_prompt)
+        debate_gate_ph.empty()
+        _agent_panel(fact_checker_ph, "Agent 6: Fact Checker",
+                     "Cross-checks draft claims against source evidence",
+                     STATUS_COMPLETE, output=fc_out, model=fc_model, prompt=fc_prompt)
+        fact_check_gate_ph.empty()
+        _agent_panel(judge_ph, "Agent 7: Judge",
                      "Evaluating draft quality...", STATUS_RUNNING, running=True)
-        _agent_panel(editor_ph, "Agent 6: Editor",
+        _agent_panel(editor_ph, "Agent 8: Editor",
                      "Polishes the draft and removes weak language", STATUS_WAITING)
 
         try:
             with st.spinner("Evaluating draft quality..."):
                 result = run_judge(full_state, chain)
         except Exception as e:
-            _agent_panel(judge_ph,  "Agent 5: Judge",  "", STATUS_FAILED)
-            _agent_panel(editor_ph, "Agent 6: Editor", "", STATUS_FAILED)
+            _agent_panel(judge_ph,  "Agent 7: Judge",  "", STATUS_FAILED)
+            _agent_panel(editor_ph, "Agent 8: Editor", "", STATUS_FAILED)
             st.error(f"Judge failed: {e}")
             return
 
@@ -954,17 +1338,23 @@ div[data-baseweb="select"] * { cursor: pointer; }
         writer_attempt   = st.session_state.get("m01_writer_attempt", 1)
         judge_editing    = st.session_state.get("m01_judge_editing", False)
 
-        attempt_note     = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
-        planner_out      = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-        researcher_out   = agent_outputs.get("researcher", {}).get("output", "")
-        researcher_model = agent_outputs.get("researcher", {}).get("model", "")
-        researcher_prompt = agent_outputs.get("researcher", {}).get("prompt", [])
-        critic_out    = agent_outputs.get("critic",   {}).get("output", "")
-        critic_model  = agent_outputs.get("critic",   {}).get("model",  "")
-        critic_prompt = agent_outputs.get("critic",   {}).get("prompt", [])
-        writer_out    = agent_outputs.get("writer",   {}).get("output", "")
-        writer_model  = agent_outputs.get("writer",   {}).get("model",  "")
-        writer_prompt = agent_outputs.get("writer",   {}).get("prompt", [])
+        attempt_note  = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
+        planner_out   = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        critic_out    = agent_outputs.get("critic",       {}).get("output", "")
+        critic_model  = agent_outputs.get("critic",       {}).get("model",  "")
+        critic_prompt = agent_outputs.get("critic",       {}).get("prompt", [])
+        wa_out    = agent_outputs.get("writer_a",     {}).get("output", "")
+        wa_model  = agent_outputs.get("writer_a",     {}).get("model",  "")
+        wa_prompt = agent_outputs.get("writer_a",     {}).get("prompt", [])
+        wb_out    = agent_outputs.get("writer_b",     {}).get("output", "")
+        wb_model  = agent_outputs.get("writer_b",     {}).get("model",  "")
+        wb_prompt = agent_outputs.get("writer_b",     {}).get("prompt", [])
+        dj_out    = agent_outputs.get("debate_judge", {}).get("output", "")
+        dj_model  = agent_outputs.get("debate_judge", {}).get("model",  "")
+        dj_prompt = agent_outputs.get("debate_judge", {}).get("prompt", [])
+        fc_out    = agent_outputs.get("fact_checker", {}).get("output", "")
+        fc_model  = agent_outputs.get("fact_checker", {}).get("model",  "")
+        fc_prompt = agent_outputs.get("fact_checker", {}).get("prompt", [])
         judge_out     = agent_outputs.get("judge",    {}).get("output", "")
         judge_model   = agent_outputs.get("judge",    {}).get("model",  "")
         judge_prompt  = agent_outputs.get("judge",    {}).get("prompt", [])
@@ -980,11 +1370,22 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Assesses source quality and flags gaps",
                      STATUS_COMPLETE, output=critic_out, model=critic_model, prompt=critic_prompt)
         critic_gate_ph.empty()
-        _agent_panel(writer_ph, "Agent 4: Writer",
-                     "Drafts the full research paper",
-                     STATUS_COMPLETE, output=writer_out, model=writer_model, prompt=writer_prompt)
-        _agent_panel(judge_ph, "Agent 5: Judge",
-                     "Evaluates draft quality before the Editor runs",
+        _agent_panel(writer_a_ph, "Agent 4A: Writer — Main",
+                     "Drafted from mainstream perspective",
+                     STATUS_COMPLETE, output=wa_out, model=wa_model, prompt=wa_prompt)
+        _agent_panel(writer_b_ph, "Agent 4B: Writer — Alt.",
+                     "Drafted from alternative perspective",
+                     STATUS_COMPLETE, output=wb_out, model=wb_model, prompt=wb_prompt)
+        _agent_panel(debate_judge_ph, "Agent 5: Debate Judge",
+                     "Selects the stronger draft and notes what to incorporate",
+                     STATUS_COMPLETE, output=dj_out, model=dj_model, prompt=dj_prompt)
+        debate_gate_ph.empty()
+        _agent_panel(fact_checker_ph, "Agent 6: Fact Checker",
+                     "Cross-checks draft claims against source evidence",
+                     STATUS_COMPLETE, output=fc_out, model=fc_model, prompt=fc_prompt)
+        fact_check_gate_ph.empty()
+        _agent_panel(judge_ph, "Agent 7: Judge",
+                     "Scores the draft on four quality dimensions",
                      STATUS_COMPLETE, output=judge_out, model=judge_model,
                      expanded=True, prompt=judge_prompt)
 
@@ -1075,14 +1476,14 @@ div[data-baseweb="select"] * { cursor: pointer; }
                         st.session_state["m01_writer_feedback"] = feedback
                         st.session_state["m01_writer_attempt"]  = writer_attempt + 1
                         st.session_state["m01_judge_editing"]   = False
-                        st.session_state["m01_phase"] = "writing"
+                        st.session_state["m01_phase"] = "writing_parallel"
                         st.rerun()
                 with col2:
                     if st.button("Cancel", key="m01_judge_cancel_btn"):
                         st.session_state["m01_judge_editing"] = False
                         st.rerun()
 
-        _agent_panel(editor_ph, "Agent 6: Editor",
+        _agent_panel(editor_ph, "Agent 8: Editor",
                      "Polishes the draft and removes weak language", STATUS_WAITING)
         return
 
@@ -1097,17 +1498,23 @@ div[data-baseweb="select"] * { cursor: pointer; }
         planner_attempt  = st.session_state.get("m01_planner_attempt", 1)
         agent_outputs    = st.session_state.get("m01_agent_outputs", {})
 
-        attempt_note     = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
-        planner_out      = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-        researcher_out   = agent_outputs.get("researcher", {}).get("output", "")
-        researcher_model = agent_outputs.get("researcher", {}).get("model", "")
-        researcher_prompt = agent_outputs.get("researcher", {}).get("prompt", [])
-        critic_out    = agent_outputs.get("critic", {}).get("output", "")
-        critic_model  = agent_outputs.get("critic", {}).get("model",  "")
-        critic_prompt = agent_outputs.get("critic", {}).get("prompt", [])
-        writer_out    = agent_outputs.get("writer", {}).get("output", "")
-        writer_model  = agent_outputs.get("writer", {}).get("model",  "")
-        writer_prompt = agent_outputs.get("writer", {}).get("prompt", [])
+        attempt_note  = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
+        planner_out   = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
+        critic_out    = agent_outputs.get("critic",       {}).get("output", "")
+        critic_model  = agent_outputs.get("critic",       {}).get("model",  "")
+        critic_prompt = agent_outputs.get("critic",       {}).get("prompt", [])
+        wa_out    = agent_outputs.get("writer_a",     {}).get("output", "")
+        wa_model  = agent_outputs.get("writer_a",     {}).get("model",  "")
+        wa_prompt = agent_outputs.get("writer_a",     {}).get("prompt", [])
+        wb_out    = agent_outputs.get("writer_b",     {}).get("output", "")
+        wb_model  = agent_outputs.get("writer_b",     {}).get("model",  "")
+        wb_prompt = agent_outputs.get("writer_b",     {}).get("prompt", [])
+        dj_out    = agent_outputs.get("debate_judge", {}).get("output", "")
+        dj_model  = agent_outputs.get("debate_judge", {}).get("model",  "")
+        dj_prompt = agent_outputs.get("debate_judge", {}).get("prompt", [])
+        fc_out    = agent_outputs.get("fact_checker", {}).get("output", "")
+        fc_model  = agent_outputs.get("fact_checker", {}).get("model",  "")
+        fc_prompt = agent_outputs.get("fact_checker", {}).get("prompt", [])
         judge_out     = agent_outputs.get("judge",  {}).get("output", "")
         judge_model   = agent_outputs.get("judge",  {}).get("model",  "")
         judge_prompt  = agent_outputs.get("judge",  {}).get("prompt", [])
@@ -1124,14 +1531,25 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Assesses source quality and flags gaps",
                      STATUS_COMPLETE, output=critic_out, model=critic_model, prompt=critic_prompt)
         critic_gate_ph.empty()
-        _agent_panel(writer_ph, "Agent 4: Writer",
-                     "Drafts the full research paper",
-                     STATUS_COMPLETE, output=writer_out, model=writer_model, prompt=writer_prompt)
+        _agent_panel(writer_a_ph, "Agent 4A: Writer — Main",
+                     "Drafted from mainstream perspective",
+                     STATUS_COMPLETE, output=wa_out, model=wa_model, prompt=wa_prompt)
+        _agent_panel(writer_b_ph, "Agent 4B: Writer — Alt.",
+                     "Drafted from alternative perspective",
+                     STATUS_COMPLETE, output=wb_out, model=wb_model, prompt=wb_prompt)
+        _agent_panel(debate_judge_ph, "Agent 5: Debate Judge",
+                     "Selects the stronger draft and notes what to incorporate",
+                     STATUS_COMPLETE, output=dj_out, model=dj_model, prompt=dj_prompt)
+        debate_gate_ph.empty()
+        _agent_panel(fact_checker_ph, "Agent 6: Fact Checker",
+                     "Cross-checks draft claims against source evidence",
+                     STATUS_COMPLETE, output=fc_out, model=fc_model, prompt=fc_prompt)
+        fact_check_gate_ph.empty()
         judge_gate_ph.empty()
-        _agent_panel(judge_ph,  "Agent 5: Judge",
-                     "Evaluates draft quality before the Editor runs",
+        _agent_panel(judge_ph, "Agent 7: Judge",
+                     "Scores the draft on four quality dimensions",
                      STATUS_COMPLETE, output=judge_out, model=judge_model, prompt=judge_prompt)
-        _agent_panel(editor_ph, "Agent 6: Editor",
+        _agent_panel(editor_ph, "Agent 8: Editor",
                      "Polishing the draft", STATUS_RUNNING, running=True)
 
         try:
@@ -1139,7 +1557,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 result = run_editor(full_state, chain)
             full_state.update(result)
         except Exception as e:
-            _agent_panel(editor_ph, "Agent 6: Editor", "", STATUS_FAILED)
+            _agent_panel(editor_ph, "Agent 8: Editor", "", STATUS_FAILED)
             st.error(f"Editor failed: {e}")
             return
 
@@ -1147,7 +1565,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
         editor_model  = result.get("model_used", "")
         editor_prompt = result.get("prompt_sent", [])
         agent_outputs["editor"] = {"output": editor_out, "model": editor_model, "prompt": editor_prompt}
-        _agent_panel(editor_ph, "Agent 6: Editor",
+        _agent_panel(editor_ph, "Agent 8: Editor",
                      "Polishes the draft and removes weak language",
                      STATUS_COMPLETE, output=editor_out, model=editor_model,
                      expanded=True, prompt=editor_prompt)
@@ -1168,11 +1586,21 @@ div[data-baseweb="select"] * { cursor: pointer; }
     if phase == "complete":
         saved = st.session_state.get("m01_agent_outputs", {})
         for name, label, desc in AGENTS:
-            out    = saved.get(name, {}).get("output", "")
-            model  = saved.get(name, {}).get("model", "")
-            prompt = saved.get(name, {}).get("prompt", [])
-            _agent_panel(ph[name], label, desc, STATUS_COMPLETE,
-                         output=out, model=model, prompt=prompt)
+            if name == "researcher":
+                _render_researcher_done(researcher_ph, saved)
+            elif name in ph:
+                out    = saved.get(name, {}).get("output", "")
+                model  = saved.get(name, {}).get("model", "")
+                prompt = saved.get(name, {}).get("prompt", [])
+                _agent_panel(ph[name], label, desc, STATUS_COMPLETE,
+                             output=out, model=model, prompt=prompt)
+        # Clear gate placeholders
+        approval_ph.empty()
+        quality_gate_ph.empty()
+        critic_gate_ph.empty()
+        debate_gate_ph.empty()
+        fact_check_gate_ph.empty()
+        judge_gate_ph.empty()
         _show_sources()
         _show_run_summary()
         _show_download()
@@ -1180,6 +1608,72 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _format_debate_output(debate_result: dict) -> str:
+    """Formats Debate Judge result as markdown for the checkpoint info box."""
+    winner     = debate_result.get("winner", "A")
+    reasoning  = debate_result.get("reasoning", "")
+    incorporate = debate_result.get("incorporate", [])
+    synthesis  = debate_result.get("synthesis", "")
+
+    lines = [f"**Winner: Draft {winner}**"]
+    if reasoning:
+        lines.append(reasoning)
+    if incorporate:
+        lines.append("")
+        lines.append("**Arguments to incorporate from the other draft:**")
+        for point in incorporate:
+            lines.append(f"- {point}")
+    if synthesis:
+        lines.append("")
+        lines.append(f"**Combined thesis:** {synthesis}")
+    return "\n".join(lines)
+
+
+def _format_fact_check_output(fc_result: dict) -> str:
+    """Formats Fact Checker result as markdown with verdict icons per claim."""
+    claims  = fc_result.get("claims", [])
+    summary = fc_result.get("summary", "")
+    unsupported = fc_result.get("unsupported_count", 0)
+    weak        = fc_result.get("weak_count", 0)
+
+    lines = []
+    if summary:
+        lines.append(f"**Summary:** {summary}")
+        lines.append("")
+    lines.append(f"Unsupported: {unsupported} · Weak: {weak} · Claims checked: {len(claims)}")
+    lines.append("")
+    for claim in claims:
+        verdict = claim.get("verdict", "Weak")
+        icon    = "🟢" if verdict == "Supported" else ("🟡" if verdict == "Weak" else "🔴")
+        c_text  = claim.get("claim", "")
+        source  = claim.get("source", "")
+        lines.append(f"{icon} **{verdict}** — {c_text}")
+        if source:
+            lines.append(f"   *Source: {source}*")
+    return "\n".join(lines)
+
+
+def _build_fact_check_feedback(fc_result: dict) -> str:
+    """Builds a re-draft note from unsupported claims for the Writer."""
+    claims = fc_result.get("claims", [])
+    unsupported = [c for c in claims if c.get("verdict") == "Unsupported"]
+    if not unsupported:
+        return ""
+    lines = [
+        "The fact checker found claims not supported by the gathered sources. "
+        "Revise or remove the following:\n"
+    ]
+    for c in unsupported:
+        lines.append(f"- {c.get('claim', '')}")
+    return "\n".join(lines)
+
+
+def _format_agent_output_b(result_b: dict) -> str:
+    """Formats Writer B output summary for the agent panel."""
+    draft = result_b.get("draft_b", "")
+    return f"*Draft B: {len(draft):,} characters*\n\n" + draft[:600] + "..."
+
 
 def _combined_flag_check(full_state: dict, chain, researcher_ph, quality_gate_ph,
                          researcher_out: str, researcher_model_label: str) -> list[str]:
@@ -1217,6 +1711,7 @@ def _render_researcher_done(placeholder, agent_outputs: dict) -> None:
         provider_stats=r.get("stats", {}),
         total_sources=r.get("total_sources", 0),
         prompt=r.get("prompt", []),
+        enriched_count=r.get("enriched_count", 0),
     )
 
 

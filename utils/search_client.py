@@ -19,13 +19,25 @@ Provider order:
     4. Empty   — graceful degradation, never crashes the pipeline
 
 Parallel search:
-    search_parallel() runs Tavily and Exa simultaneously using ThreadPoolExecutor.
-    Results are merged and deduplicated by URL. Serper is used as fallback only
-    if both Tavily and Exa return zero results for a query.
+    search_parallel() fires ALL (N queries x 2 providers) simultaneously in a
+    single ThreadPoolExecutor pool. For 5 questions that is 10 parallel threads
+    instead of 5 sequential pairs. Serper is used as fallback only if both
+    Tavily and Exa return zero results for a query.
+
+Article enrichment:
+    enrich_top_sources() uses Tavily Extract to fetch full article text for the
+    top sources per query, replacing the 400-char snippet with up to 2,000 chars.
 """
 
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Domains excluded from article enrichment — low-quality or non-article content
+_ENRICH_SKIP_DOMAINS = {
+    "youtube.com", "youtu.be", "linkedin.com", "facebook.com",
+    "twitter.com", "x.com", "instagram.com", "tiktok.com",
+    "reddit.com", "quora.com", "pinterest.com", "medium.com",
+}
 
 
 # ── Provider functions ────────────────────────────────────────────────────────
@@ -146,9 +158,10 @@ class SearchChain:
 
     def search_parallel(self, queries: list[str], max_results: int = 3) -> tuple[dict, list[str], dict]:
         """
-        Runs Tavily and Exa simultaneously for each query using ThreadPoolExecutor.
-        Merges and deduplicates results by URL. If both return zero results for a query,
-        falls back to Serper.
+        Fires ALL (N queries x 2 providers) simultaneously in a single ThreadPoolExecutor pool.
+        For 5 questions that is 10 parallel threads instead of 5 sequential pairs.
+        Merges and deduplicates results by URL. If both providers return zero results for a
+        query, falls back to Serper for that query.
 
         Returns:
             research:       {query: [merged result dicts]}
@@ -156,32 +169,35 @@ class SearchChain:
             provider_stats: {query: {"tavily": count, "exa": count, "serper": count}}
                             Counts show how many results each provider contributed per query.
         """
-        research = {}
-        sources = []
+        # Submit all (query, provider) pairs at once
+        futures = {}  # future -> (query, provider_name)
+        with ThreadPoolExecutor(max_workers=len(queries) * 2) as executor:
+            for query in queries:
+                ft = executor.submit(_search_tavily, query, max_results)
+                fe = executor.submit(_search_exa,    query, max_results)
+                futures[ft] = (query, "tavily")
+                futures[fe] = (query, "exa")
+
+            # Collect results as they complete
+            raw: dict[str, dict] = {q: {"tavily": [], "exa": []} for q in queries}
+            for future in as_completed(futures):
+                query, provider = futures[future]
+                try:
+                    raw[query][provider] = future.result(timeout=30)
+                except Exception:
+                    raw[query][provider] = []
+
+        # Merge, deduplicate, Serper fallback per query
+        research       = {}
+        sources        = []
         provider_stats = {}
 
         for query in queries:
-            # Run Tavily and Exa in parallel
-            tavily_results = []
-            exa_results = []
+            tavily_results = raw[query]["tavily"]
+            exa_results    = raw[query]["exa"]
 
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_tavily = executor.submit(_search_tavily, query, max_results)
-                future_exa    = executor.submit(_search_exa,    query, max_results)
-
-                try:
-                    tavily_results = future_tavily.result(timeout=30)
-                except Exception:
-                    tavily_results = []
-
-                try:
-                    exa_results = future_exa.result(timeout=30)
-                except Exception:
-                    exa_results = []
-
-            # Merge and deduplicate by URL
             seen_urls = set()
-            merged = []
+            merged    = []
             for hit in tavily_results + exa_results:
                 url = hit.get("url", "")
                 if url and url not in seen_urls:
@@ -215,6 +231,83 @@ class SearchChain:
                     sources.append(url)
 
         return research, sources, provider_stats
+
+    def enrich_top_sources(self, research: dict, max_per_query: int = 2) -> tuple[dict, int]:
+        """
+        Fetches full article text for the top sources per query using Tavily Extract.
+
+        Only enriches sources that are not from low-quality/social domains.
+        Replaces the 400-char snippet with up to 2,000 chars of full text.
+        Adds "enriched": True to each enriched hit.
+
+        Returns:
+            enriched_research: updated copy of the research dict
+            enriched_count:    total number of sources enriched
+        """
+        from urllib.parse import urlparse
+        from tavily import TavilyClient
+
+        api_key = os.getenv("TAVILY_API_KEY")
+        if not api_key:
+            return research, 0
+
+        try:
+            client = TavilyClient(api_key=api_key)
+        except Exception:
+            return research, 0
+
+        # Collect candidate URLs (up to max_per_query per query, skip bad domains)
+        url_to_hits: dict[str, list] = {}  # url -> list of (query, hit_index) tuples
+        for query, hits in research.items():
+            count = 0
+            for idx, hit in enumerate(hits):
+                if count >= max_per_query:
+                    break
+                url = hit.get("url", "")
+                if not url:
+                    continue
+                try:
+                    domain = urlparse(url).netloc.replace("www.", "")
+                except Exception:
+                    domain = ""
+                if domain in _ENRICH_SKIP_DOMAINS:
+                    continue
+                if url not in url_to_hits:
+                    url_to_hits[url] = []
+                url_to_hits[url].append((query, idx))
+                count += 1
+
+        if not url_to_hits:
+            return research, 0
+
+        # Fetch full text from Tavily Extract
+        try:
+            extract_response = client.extract(urls=list(url_to_hits.keys()))
+            results_by_url = {
+                r.get("url", ""): r.get("raw_content", "")
+                for r in extract_response.get("results", [])
+                if r.get("raw_content")
+            }
+        except Exception:
+            return research, 0
+
+        # Apply enrichment — work on a deep copy so original is not mutated
+        import copy
+        enriched_research = copy.deepcopy(research)
+        enriched_count    = 0
+
+        for url, locations in url_to_hits.items():
+            full_text = results_by_url.get(url, "")
+            if not full_text:
+                continue
+            snippet = full_text[:2000]
+            for query, idx in locations:
+                if idx < len(enriched_research.get(query, [])):
+                    enriched_research[query][idx]["content"]  = snippet
+                    enriched_research[query][idx]["enriched"] = True
+                    enriched_count += 1
+
+        return enriched_research, enriched_count
 
 
 def get_search_chain() -> SearchChain:
