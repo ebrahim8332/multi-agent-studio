@@ -235,6 +235,38 @@ def render() -> None:
     )
     st.markdown("---")
 
+    with st.expander("ℹ️ How this is different from asking a chat AI", expanded=False):
+        st.markdown("""
+**Ask a chat AI the same topic and you get a long, confident-looking answer in seconds.**
+
+That answer comes entirely from the model's training data — which has a cutoff date, no live sources, and no verification step.
+This pipeline works differently. Here is what each step adds.
+
+**Step 1 — Planner.** The topic is broken into specific research questions first.
+This stops the pipeline from drifting off-topic. It also gives you a review point before any expensive work runs.
+
+**Step 2 — Researcher.** The pipeline searches the live web right now.
+Sources published yesterday are included. A chat AI cannot do this.
+
+**Step 3 — Critic.** Every source is evaluated before the Writer sees it.
+Sources rated Weak are flagged. The Writer is told to treat them as background only — not to build arguments on them.
+A chat AI has no equivalent of this step.
+
+**Step 4 — Writer.** The paper is built from the evidence found — not from model memory.
+Where no sources were found, the paper says so explicitly rather than filling the gap with a plausible-sounding claim.
+
+**Step 5 — Judge.** The draft is scored on four dimensions: completeness, argument quality, source use, and format.
+Word count is measured by Python (not estimated by the model). If the draft is short or thin, you are told before the Editor runs.
+
+**Step 6 — Editor.** The final pass enforces writing rules: short sentences, no banned phrases, correct structure.
+
+---
+**What this means in practice:**
+A chat AI produces output fast. This pipeline takes longer because it is doing real work at each step.
+The tradeoff: the output cites real, current sources. Gaps are named rather than papered over.
+Quality gates catch problems before they become your problem.
+""")
+
     st.markdown("""
 <style>
 div[data-baseweb="select"] { cursor: pointer; }

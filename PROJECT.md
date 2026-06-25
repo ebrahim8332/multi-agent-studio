@@ -1,7 +1,7 @@
 # PROJECT.md — multi-agent-studio
 
-## Status: Module 1 complete — Session 7 smart checkpoints + agent context improvements. Next module TBD.
-## Last updated: 2026-06-24
+## Status: Module 1 complete. Model chain updated Session 8 — Llama 4 Scout replaced with Qwen3.6-27B. Next module TBD.
+## Last updated: 2026-06-25
 
 ---
 
@@ -73,6 +73,50 @@
 ---
 
 ## Session Notes
+
+### Session 8 — 2026-06-25 (parallel search, bug fixes, quality improvements, learning capture)
+
+**Model chain update**
+- Removed `meta-llama/llama-4-scout-17b-16e-instruct` — deprecated by Groq June 2026, decommission July 17 2026
+- Added `qwen/qwen3.6-27b` at TIER2 — Groq's own recommended replacement
+- qwen3.6-27b defaults to thinking mode; `GroqProvider._call()` strips `<think>` blocks (handles complete and truncated)
+- gemini-2.5-pro moved from position 0 to position 12 — never responds on free tier (silent hang, not 429); moving it to near-last avoids 120-second timeout on every run
+- After chain locks, model name stored in `session_state["locked_model_name"]` — used by running caption in `_agent_panel()`
+
+**Parallel search**
+- Researcher now calls `search_parallel()` instead of `search_multi()`
+- Tavily and Exa run simultaneously via `ThreadPoolExecutor(max_workers=2)`; results merged and deduplicated by URL
+- Serper used as fallback only if both Tavily and Exa return zero results for a query
+- `provider_stats` stored in `agent_outputs["researcher"]["stats"]`; UI shows side-by-side Tavily | Exa columns with per-provider result counts
+
+**Bug: app resetting on button click**
+- Root cause: Streamlit ghost click bug — buttons without explicit `key=` fire incorrectly when layout changes between reruns
+- Fix: added `key=` to all 16 buttons in ui.py
+
+**Bug: Writer taking 3+ minutes**
+- Root cause: gemini-2.5-pro at chain position 0 accepts connections but never responds (no error, full 120-second timeout before chain falls through)
+- Fix: moved gemini-2.5-pro to chain position 12 (near-last)
+
+**Writer word count shortfall**
+- Observed: full reports coming in at 970-1,154 words against 2,000-4,500 targets
+- Root cause: "approximately" is treated as advisory by models
+- Fix: changed to hard floor in Writer prompt — "minimum X words. This is a hard floor, not a suggestion." Added section depth instructions and self-check rule.
+
+**Judge word count contradiction fixed**
+- Observed: rule check showed ✅ 2,236 words but LLM scored Format adherence 3/5 saying it was short
+- Root cause: LLMs cannot count words accurately; Judge LLM was estimating from token count
+- Fix: inject actual Python word count and pass/fail status into Judge LLM prompt — model cannot override objective count
+
+**Active model display**
+- Running agent caption now shows which model is currently locked: "⏳ Working... · gemini-3-flash-preview"
+- First agent shows plain "⏳ Working..." (no model locked yet). Educational purpose: shows what provider is responding.
+
+**Key learnings captured this session**
+- Chat AI vs pipeline distinction: a chat AI answers from memory with no live search, no source verification, and no quality gates. This pipeline searches the live web first, evaluates source quality, and flags gaps explicitly. Added as "How it works" expander in ui.py.
+- LLMs cannot count words. Python counting is authoritative. Injecting objective counts into LLM prompts prevents hallucinated quality assessments.
+- Silent API hangs are harder to debug than 429 errors. gemini-2.5-pro never returned a 429 — it just never responded. Chain position matters when failures are silent.
+- Streamlit button ghost clicks: any layout change between reruns can fire the wrong button. Explicit `key=` on every button is mandatory, not optional.
+- "Approximately" in prompts means optional. Hard floors with consequences work.
 
 ### Session 7 — 2026-06-24 (smart checkpoints + agent context improvements)
 **Agent-to-agent context pass**
