@@ -1219,15 +1219,33 @@ div[data-baseweb="select"] * { cursor: pointer; }
         unsupported_count = fc_result.get("unsupported_count", 0)
         fc_editing        = st.session_state.get("m01_fc_editing", False)
         can_redraft       = writer_attempt <= MAX_WRITER_RETRIES
+        prior_feedback    = st.session_state.get("m01_writer_feedback", "")
 
-        if not flagged:
-            # Auto-proceed: no unsupported claims
+        if not flagged and writer_attempt == 1:
+            # First-run clean pass — auto-proceed with no friction
             st.session_state["m01_phase"] = "judge_running"
             st.rerun()
             return
 
-        # Unsupported claims found — show checkpoint
+        # Show checkpoint — either re-draft result or first-run issues
         with fact_check_gate_ph.container():
+
+            # When returning from a re-draft, show what feedback was sent
+            if writer_attempt > 1 and prior_feedback:
+                with st.expander(f"Re-draft {writer_attempt - 1}: Feedback sent to writers", expanded=False):
+                    st.markdown(prior_feedback)
+
+            if not flagged:
+                # Re-draft fixed the issues — confirm before proceeding
+                st.success(
+                    "✅ Fact check passed. All claims are now supported by source evidence. "
+                    "Your feedback was incorporated."
+                )
+                if st.button("Proceed to Judge →", type="primary", key="m01_fc_proceed_btn"):
+                    st.session_state["m01_phase"] = "judge_running"
+                    st.rerun()
+                return
+
             st.warning(
                 f"Fact check: {unsupported_count} claim(s) not supported by source evidence. "
                 "Review before proceeding."
