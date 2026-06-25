@@ -94,6 +94,7 @@ _STATE_KEYS = [
     "m01_call_log",
     "m01_writer_attempt", "m01_writer_feedback", "m01_fc_feedback", "m01_fc_feedback_draft", "m01_judge_feedback_draft", "m01_judge_editing", "m01_fc_editing",
     "m01_judge_result", "m01_fact_check_result",
+    "locked_provider_index", "locked_model_name",
 ]
 
 

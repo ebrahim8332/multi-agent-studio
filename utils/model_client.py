@@ -128,8 +128,9 @@ class FallbackChain:
                  agent_label: str = "") -> tuple[str, str]:
         """Returns (response_text, model_name) from the first provider that succeeds.
         Also accumulates token counts into session_state for the run summary."""
+        start = self.session_state.get(SESSION_LOCK_KEY, 0)
         errors = []
-        for i in range(len(self.providers)):
+        for i in range(start, len(self.providers)):
             provider = self.providers[i]
             try:
                 text, input_tok, output_tok = provider.complete(
