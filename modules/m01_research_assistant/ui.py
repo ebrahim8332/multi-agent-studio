@@ -233,7 +233,8 @@ def render() -> None:
     st.caption("Eight agents research, critique, debate, fact-check, judge, and edit a structured paper.")
     st.markdown(
         "Eight AI agents work in sequence — an **agent pipeline** where each agent builds on the work "
-        "of the one before it. Two agents run in parallel (Writers A and B). "
+        "of the one before it. Two parallel patterns run inside the pipeline: the Researcher fires "
+        "Tavily and Exa simultaneously, and Writers A and B draft simultaneously. "
         "✋ marks a human checkpoint where you review and approve before the next agent runs.\n\n"
         "- **Planner** — breaks your topic into focused research questions ✋\n"
         "- **Researcher** — searches the live web, all questions simultaneously (Tavily + Exa in parallel)\n"
