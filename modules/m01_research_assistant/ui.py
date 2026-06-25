@@ -102,45 +102,74 @@ _STATE_KEYS = [
 def _agent_panel(placeholder, label: str, description: str, status: str,
                  output: str = "", model: str = "", expanded: bool = False,
                  running: bool = False, prompt: list = None,
-                 running_label: str = None) -> None:
+                 running_label: str = None, bordered: bool = None) -> None:
     """Renders a single agent panel into a placeholder.
 
-    prompt: list of message dicts (system/user). When provided, shows a
-    'View prompt sent to AI' expander so the user can inspect what the
-    model actually received.
-    running_label: overrides the default 'Working... · model' caption when set.
+    bordered: when True, wraps only the header (label/status) in a bordered
+    container — expanders render outside the border as usual.
     """
+    if bordered is None:
+        bordered = "Writer" in label
     with placeholder.container():
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.markdown(f"**{label}**  \n{description}")
-        with col2:
-            st.markdown(status)
-        if running:
-            if running_label:
-                st.caption(running_label)
-            else:
-                locked_model = st.session_state.get("locked_model_name", "")
-                running_caption = f"⏳ Working... · {locked_model}" if locked_model else "⏳ Working..."
-                st.caption(running_caption)
-            components.html(
-                """
-                <script>
-                    // Scroll the parent page to this iframe's position.
-                    // Iterates iframes and matches by contentWindow — no cross-origin access needed.
-                    var frames = window.parent.document.querySelectorAll('iframe');
-                    for (var i = 0; i < frames.length; i++) {
-                        try {
-                            if (frames[i].contentWindow === window) {
-                                frames[i].scrollIntoView({behavior: 'smooth', block: 'center'});
-                                break;
+        if bordered:
+            with st.container(border=True):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(f"**{label}**  \n{description}")
+                with col2:
+                    st.markdown(status)
+                if running:
+                    if running_label:
+                        st.caption(running_label)
+                    else:
+                        locked_model = st.session_state.get("locked_model_name", "")
+                        running_caption = f"⏳ Working... · {locked_model}" if locked_model else "⏳ Working..."
+                        st.caption(running_caption)
+                    components.html(
+                        """
+                        <script>
+                            var frames = window.parent.document.querySelectorAll('iframe');
+                            for (var i = 0; i < frames.length; i++) {
+                                try {
+                                    if (frames[i].contentWindow === window) {
+                                        frames[i].scrollIntoView({behavior: 'smooth', block: 'center'});
+                                        break;
+                                    }
+                                } catch(e) {}
                             }
-                        } catch(e) {}
-                    }
-                </script>
-                """,
-                height=0,
-            )
+                        </script>
+                        """,
+                        height=0,
+                    )
+        else:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown(f"**{label}**  \n{description}")
+            with col2:
+                st.markdown(status)
+            if running:
+                if running_label:
+                    st.caption(running_label)
+                else:
+                    locked_model = st.session_state.get("locked_model_name", "")
+                    running_caption = f"⏳ Working... · {locked_model}" if locked_model else "⏳ Working..."
+                    st.caption(running_caption)
+                components.html(
+                    """
+                    <script>
+                        var frames = window.parent.document.querySelectorAll('iframe');
+                        for (var i = 0; i < frames.length; i++) {
+                            try {
+                                if (frames[i].contentWindow === window) {
+                                    frames[i].scrollIntoView({behavior: 'smooth', block: 'center'});
+                                    break;
+                                }
+                            } catch(e) {}
+                        }
+                    </script>
+                    """,
+                    height=0,
+                )
         if output:
             with st.expander("View output", expanded=expanded):
                 st.markdown(output)
@@ -376,11 +405,9 @@ div[data-baseweb="select"] * { cursor: pointer; }
     critic_gate_ph     = st.empty()
     _writers_cols      = st.columns(2)
     with _writers_cols[0]:
-        with st.container(border=True):
-            writer_a_ph = st.empty()
+        writer_a_ph    = st.empty()
     with _writers_cols[1]:
-        with st.container(border=True):
-            writer_b_ph = st.empty()
+        writer_b_ph    = st.empty()
     debate_judge_ph    = st.empty()
     debate_gate_ph     = st.empty()
     fact_checker_ph    = st.empty()
