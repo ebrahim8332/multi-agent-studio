@@ -350,7 +350,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
     col_btn, col_clear = st.columns([2, 1])
     with col_btn:
         run_clicked = st.button(
-            "Run Research", type="primary",
+            "Start Research", type="primary",
             disabled=not topic.strip() or locked,
             key="m01_run_btn",
         )
@@ -376,9 +376,11 @@ div[data-baseweb="select"] * { cursor: pointer; }
     critic_gate_ph     = st.empty()
     _writers_cols      = st.columns(2)
     with _writers_cols[0]:
-        writer_a_ph    = st.empty()
+        with st.container(border=True):
+            writer_a_ph = st.empty()
     with _writers_cols[1]:
-        writer_b_ph    = st.empty()
+        with st.container(border=True):
+            writer_b_ph = st.empty()
     debate_judge_ph    = st.empty()
     debate_gate_ph     = st.empty()
     fact_checker_ph    = st.empty()
@@ -1721,9 +1723,9 @@ def _format_debate_output(debate_result: dict) -> str:
 
 
 def _format_fact_check_output(fc_result: dict) -> str:
-    """Formats Fact Checker result as markdown with verdict icons per claim."""
-    claims  = fc_result.get("claims", [])
-    summary = fc_result.get("summary", "")
+    """Formats Fact Checker result as a markdown table."""
+    claims      = fc_result.get("claims", [])
+    summary     = fc_result.get("summary", "")
     unsupported = fc_result.get("unsupported_count", 0)
     weak        = fc_result.get("weak_count", 0)
 
@@ -1733,14 +1735,14 @@ def _format_fact_check_output(fc_result: dict) -> str:
         lines.append("")
     lines.append(f"Unsupported: {unsupported} · Weak: {weak} · Claims checked: {len(claims)}")
     lines.append("")
+    lines.append("| | Verdict | Claim | Source |")
+    lines.append("|---|---|---|---|")
     for claim in claims:
         verdict = claim.get("verdict", "Weak")
         icon    = "🟢" if verdict == "Supported" else ("🟡" if verdict == "Weak" else "🔴")
-        c_text  = claim.get("claim", "")
-        source  = claim.get("source", "")
-        lines.append(f"{icon} **{verdict}** — {c_text}")
-        if source:
-            lines.append(f"   *Source: {source}*")
+        c_text  = claim.get("claim", "").replace("|", ",")[:120]
+        source  = claim.get("source", "").replace("|", ",")[:60]
+        lines.append(f"| {icon} | {verdict} | {c_text} | {source} |")
     return "\n".join(lines)
 
 
