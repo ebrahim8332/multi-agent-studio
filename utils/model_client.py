@@ -61,19 +61,19 @@ def build_chain() -> list[BaseProvider]:
     Groq models follow as the fallback tier.
 
     Full order when both keys are set:
-      [0]  gemini-2.5-pro         — best quality, may be rate-limited on free tier
-      [1]  gemini-3-flash-preview — GA, matches 2.5 Pro quality, 80K output, fastest Gemini
-      [2]  gemini-3.1-flash-lite  — outperforms 2.5 Flash on benchmarks, 381 t/s
-      [3]  gemini-2.5-flash       — strong hybrid reasoning, 65K output
-      [4]  gemini-2.5-flash-lite  — lighter 2.5, still better than 2.0 generation
-      [5]  gemini-2.0-flash       — deprecated June 2026, 8K output cap
-      [6]  gemini-2.0-flash-lite  — deprecated June 2026, 8K output cap
-      [7]  llama-3.3-70b-versatile — best Groq all-rounder, 86% MMLU
-      [8]  qwen3.6-27b            — Groq-recommended replacement for Llama 4 Scout (deprecated June 2026)
-      [9]  qwen3-32b              — competitive coding and reasoning, 85.7% MMLU
-      [10] gpt-oss-120b           — large reasoning model, benchmarks not fully published
-      [11] llama-3.1-8b-instant   — smallest model, fast, high RPD
-      [12] gpt-oss-20b            — smaller/faster sibling to 120B, last Groq resort
+      [0]  gemini-3-flash-preview — GA, matches 2.5 Pro quality, 80K output, fastest Gemini
+      [1]  gemini-3.1-flash-lite  — outperforms 2.5 Flash on benchmarks, 381 t/s
+      [2]  gemini-2.5-flash       — strong hybrid reasoning, 65K output
+      [3]  gemini-2.5-flash-lite  — lighter 2.5, still better than 2.0 generation
+      [4]  gemini-2.0-flash       — deprecated June 2026, 8K output cap
+      [5]  gemini-2.0-flash-lite  — deprecated June 2026, 8K output cap
+      [6]  llama-3.3-70b-versatile — best Groq all-rounder, 86% MMLU
+      [7]  qwen3.6-27b            — Groq-recommended replacement for Llama 4 Scout (deprecated June 2026)
+      [8]  qwen3-32b              — competitive coding and reasoning, 85.7% MMLU
+      [9]  gpt-oss-120b           — large reasoning model, benchmarks not fully published
+      [10] llama-3.1-8b-instant   — smallest model, fast, high RPD
+      [11] gpt-oss-20b            — smaller/faster sibling to 120B, last Groq resort
+      [12] gemini-2.5-pro         — moved to near-last: never responds on free tier (silent hang)
       [13] gemini-flash-latest    — unresolved alias, unpredictable limits, last resort only
     """
     # Start with Groq as the base fallback tier
@@ -88,11 +88,12 @@ def build_chain() -> list[BaseProvider]:
 
     if os.getenv("GEMINI_API_KEY"):
         from utils.gemini_provider import GeminiProvider
-        # Named Gemini models go at the front — best quality, known output limits
-        # gemini-flash-latest is an alias for an unknown model with unpredictable limits
-        # so it goes at the end, after Groq, as a last resort
+        # Named Gemini models go at the front — best quality, known output limits.
+        # gemini-2.5-pro is excluded here: it never responds on the free tier (silent hang,
+        # not a 429), so putting it first costs a full timeout on every run. It goes near
+        # the end instead, after all working models, so it is still used if available.
+        # gemini-flash-latest is an unresolved alias with unpredictable limits — absolute last.
         for model in reversed([
-            "gemini-2.5-pro",
             "gemini-3-flash-preview",
             "gemini-3.1-flash-lite",
             "gemini-2.5-flash",
@@ -101,6 +102,7 @@ def build_chain() -> list[BaseProvider]:
             "gemini-2.0-flash-lite",
         ]):
             providers.insert(0, GeminiProvider(model))
+        providers.append(GeminiProvider("gemini-2.5-pro"))
         providers.append(GeminiProvider("gemini-flash-latest"))
 
     return providers
