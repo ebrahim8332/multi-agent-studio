@@ -92,7 +92,7 @@ _STATE_KEYS = [
     "m01_planner_model", "m01_planner_prompt", "m01_inputs", "m01_phase",
     "m01_flagged_questions", "m01_researcher_attempt",
     "m01_call_log",
-    "m01_writer_attempt", "m01_writer_feedback", "m01_judge_editing",
+    "m01_writer_attempt", "m01_writer_feedback", "m01_judge_editing", "m01_fc_editing",
     "m01_judge_result", "m01_fact_check_result",
 ]
 
@@ -1217,6 +1217,8 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
         flagged           = fc_result.get("flagged", False)
         unsupported_count = fc_result.get("unsupported_count", 0)
+        fc_editing        = st.session_state.get("m01_fc_editing", False)
+        can_redraft       = writer_attempt <= MAX_WRITER_RETRIES
 
         if not flagged:
             # Auto-proceed: no unsupported claims
@@ -1248,24 +1250,47 @@ div[data-baseweb="select"] * { cursor: pointer; }
                     st.caption(source)
 
             st.markdown("")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                if st.button("Proceed to Judge →", type="primary", key="m01_fc_proceed_btn"):
-                    st.session_state["m01_phase"] = "judge_running"
-                    st.rerun()
-            with col2:
-                if st.button("Re-draft with fact check note", key="m01_fc_redraft_btn"):
-                    feedback_note = _build_fact_check_feedback(fc_result)
-                    st.session_state["m01_writer_feedback"] = feedback_note
-                    st.session_state["m01_writer_attempt"]  = writer_attempt + 1
-                    st.session_state["m01_phase"] = "writing_parallel"
-                    st.rerun()
-            with col3:
-                if st.button("Stop here", key="m01_fc_stop_btn"):
-                    for key in _STATE_KEYS:
-                        st.session_state.pop(key, None)
-                    st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
-                    st.rerun()
+
+            if not fc_editing:
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button("Proceed to Judge →", type="primary", key="m01_fc_proceed_btn"):
+                        st.session_state["m01_phase"] = "judge_running"
+                        st.rerun()
+                with col2:
+                    redraft_label = "Re-draft with note" if can_redraft else f"Re-draft (max {MAX_WRITER_RETRIES} reached)"
+                    if st.button(redraft_label, disabled=not can_redraft, key="m01_fc_redraft_btn"):
+                        st.session_state["m01_fc_editing"] = True
+                        st.rerun()
+                with col3:
+                    if st.button("Stop here", key="m01_fc_stop_btn"):
+                        for key in _STATE_KEYS:
+                            st.session_state.pop(key, None)
+                        st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
+                        st.rerun()
+            else:
+                suggestion = _build_fact_check_feedback(fc_result)
+                st.markdown("**What should the Writer fix?**")
+                st.caption("Pre-filled from unsupported claims — edit or use as-is.")
+                st.text_area(
+                    "Feedback for re-draft", height=140,
+                    value=suggestion,
+                    key="m01_fc_feedback_input",
+                    label_visibility="collapsed",
+                )
+                col1, col2 = st.columns([1, 1])
+                with col1:
+                    if st.button("Submit and re-draft →", type="primary", key="m01_fc_submit_btn"):
+                        feedback = st.session_state.get("m01_fc_feedback_input", "")
+                        st.session_state["m01_writer_feedback"] = feedback
+                        st.session_state["m01_writer_attempt"]  = writer_attempt + 1
+                        st.session_state["m01_fc_editing"]      = False
+                        st.session_state["m01_phase"] = "writing_parallel"
+                        st.rerun()
+                with col2:
+                    if st.button("Cancel", key="m01_fc_cancel_btn"):
+                        st.session_state["m01_fc_editing"] = False
+                        st.rerun()
 
         return
 
