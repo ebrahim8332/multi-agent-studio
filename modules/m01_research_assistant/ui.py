@@ -1230,16 +1230,16 @@ div[data-baseweb="select"] * { cursor: pointer; }
         # Show checkpoint — either re-draft result or first-run issues
         with fact_check_gate_ph.container():
 
-            # When returning from a re-draft, show what feedback was sent
-            if writer_attempt > 1 and prior_feedback:
-                with st.expander(f"Re-draft {writer_attempt - 1}: Feedback sent to writers", expanded=False):
-                    st.markdown(prior_feedback)
+            # When returning from a re-draft, show attempt number and what feedback was sent
+            if writer_attempt > 1:
+                st.info(f"**Re-draft {writer_attempt - 1} complete.** "
+                        + (f"Feedback sent to writers: *{prior_feedback[:200]}{'...' if len(prior_feedback) > 200 else ''}*"
+                           if prior_feedback else "No feedback note was recorded."))
 
             if not flagged:
                 # Re-draft fixed the issues — confirm before proceeding
                 st.success(
-                    "✅ Fact check passed. All claims are now supported by source evidence. "
-                    "Your feedback was incorporated."
+                    "✅ Fact check passed. All claims are now supported by source evidence."
                 )
                 if st.button("Proceed to Judge →", type="primary", key="m01_fc_proceed_btn"):
                     st.session_state["m01_phase"] = "judge_running"
