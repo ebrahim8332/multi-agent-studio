@@ -1288,11 +1288,12 @@ div[data-baseweb="select"] * { cursor: pointer; }
                         st.rerun()
             else:
                 suggestion = _build_fact_check_feedback(fc_result)
+                if "m01_fc_feedback_input" not in st.session_state:
+                    st.session_state["m01_fc_feedback_input"] = suggestion
                 st.markdown("**What should the Writer fix?**")
                 st.caption("Pre-filled from unsupported claims — edit or use as-is.")
                 st.text_area(
                     "Feedback for re-draft", height=140,
-                    value=suggestion,
                     key="m01_fc_feedback_input",
                     label_visibility="collapsed",
                 )
@@ -1530,11 +1531,12 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 st.caption("The Editor will not start until you approve.")
             else:
                 suggestion = _build_redraft_suggestion(judge_result)
+                if "m01_writer_feedback_input" not in st.session_state:
+                    st.session_state["m01_writer_feedback_input"] = suggestion
                 st.markdown("**What should the Writer fix?**")
                 st.caption("Pre-filled from the Judge's findings — edit or use as-is.")
                 st.text_area(
                     "Feedback for re-draft", height=160,
-                    value=suggestion,
                     key="m01_writer_feedback_input",
                     label_visibility="collapsed",
                 )
