@@ -338,7 +338,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
     phase  = st.session_state.get("m01_phase", "idle")
     locked = phase in (
         "running", "critic_running", "critic_done",
-        "writing_parallel", "debate_done",
+        "writing_parallel",
         "fact_check_running", "fact_check_done",
         "judge_running", "judge_done",
         "editor_running",
@@ -1053,66 +1053,8 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
         st.session_state["m01_pending_state"]   = full_state
         st.session_state["m01_agent_outputs"]   = agent_outputs
-        st.session_state["m01_phase"] = "debate_done"
+        st.session_state["m01_phase"] = "fact_check_running"
         st.rerun()
-        return
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # PHASE: debate_done  (Debate Judge checkpoint)
-    # ══════════════════════════════════════════════════════════════════════════
-    if phase == "debate_done":
-        pending       = st.session_state.get("m01_pending_state", {})
-        questions     = pending.get("questions", [])
-        p_model       = st.session_state.get("m01_planner_model", "")
-        p_prompt      = st.session_state.get("m01_planner_prompt", [])
-        planner_attempt = st.session_state.get("m01_planner_attempt", 1)
-        agent_outputs = st.session_state.get("m01_agent_outputs", {})
-
-        attempt_note  = f" · attempt {planner_attempt}" if planner_attempt > 1 else ""
-        planner_out   = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))
-        critic_out    = agent_outputs.get("critic",       {}).get("output", "")
-        critic_model  = agent_outputs.get("critic",       {}).get("model",  "")
-        critic_prompt = agent_outputs.get("critic",       {}).get("prompt", [])
-        wa_out    = agent_outputs.get("writer_a",     {}).get("output", "")
-        wa_model  = agent_outputs.get("writer_a",     {}).get("model",  "")
-        wa_prompt = agent_outputs.get("writer_a",     {}).get("prompt", [])
-        wb_out    = agent_outputs.get("writer_b",     {}).get("output", "")
-        wb_model  = agent_outputs.get("writer_b",     {}).get("model",  "")
-        wb_prompt = agent_outputs.get("writer_b",     {}).get("prompt", [])
-        dj_out    = agent_outputs.get("debate_judge", {}).get("output", "")
-        dj_model  = agent_outputs.get("debate_judge", {}).get("model",  "")
-        dj_prompt = agent_outputs.get("debate_judge", {}).get("prompt", [])
-        debate_result = pending.get("debate_result", {})
-
-        _agent_panel(planner_ph, "Agent 1: Planner",
-                     "Breaks the topic into focused research questions",
-                     STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
-        approval_ph.empty()
-        _render_researcher_done(researcher_ph, agent_outputs, questions=questions)
-        quality_gate_ph.empty()
-        _agent_panel(critic_ph, "Agent 3: Critic",
-                     "Assesses source quality and flags gaps",
-                     STATUS_COMPLETE, output=critic_out, model=critic_model, prompt=critic_prompt)
-        critic_gate_ph.empty()
-        _agent_panel(writer_a_ph, "Agent 4A: Writer — Main",
-                     "Drafted from mainstream perspective",
-                     STATUS_COMPLETE, output=wa_out, model=wa_model, prompt=wa_prompt)
-        _agent_panel(writer_b_ph, "Agent 4B: Writer — Alt.",
-                     "Drafted from alternative perspective",
-                     STATUS_COMPLETE, output=wb_out, model=wb_model, prompt=wb_prompt)
-        _agent_panel(debate_judge_ph, "Agent 5: Debate Judge",
-                     "Selects the stronger draft and notes what to incorporate",
-                     STATUS_COMPLETE, output=dj_out, model=dj_model, expanded=True, prompt=dj_prompt)
-        _agent_panel(fact_checker_ph, "Agent 6: Fact Checker",
-                     "Cross-checks draft claims against source evidence", STATUS_WAITING)
-        _agent_panel(judge_ph,  "Agent 7: Judge",  "Scores the draft on four quality dimensions", STATUS_WAITING)
-        _agent_panel(editor_ph, "Agent 8: Editor", "Polishes the draft and removes weak language", STATUS_WAITING)
-
-        with debate_gate_ph.container():
-            if st.button("Continue to Fact Checker →", type="primary", key="m01_debate_continue_btn"):
-                st.session_state["m01_phase"] = "fact_check_running"
-                st.rerun()
-
         return
 
     # ══════════════════════════════════════════════════════════════════════════
