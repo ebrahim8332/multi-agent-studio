@@ -574,7 +574,13 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
     # This lets the Writer see source quality for each question without cross-referencing.
     critic_ratings = _parse_critic_ratings(critique, questions)
 
-    # Build a structured evidence block — include domain and Critic rating per question
+    # Build a structured evidence block — include domain and Critic rating per question.
+    # Cap total evidence at 40,000 chars to keep the prompt within model context limits.
+    # With many sources, reduce snippet length proportionally rather than dropping sources.
+    total_sources = sum(len(research.get(q, [])) for q in questions)
+    MAX_EVIDENCE_CHARS = 40_000
+    chars_per_source   = max(200, min(700, MAX_EVIDENCE_CHARS // max(total_sources, 1)))
+
     evidence_blocks = []
     for q in questions:
         rating = critic_ratings.get(q, "Adequate")
@@ -582,7 +588,7 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
         snippets = []
         for hit in hits:
             title   = hit.get("title", "")
-            content = hit.get("content", "")[:700]
+            content = hit.get("content", "")[:chars_per_source]
             url     = hit.get("url", "")
             try:
                 from urllib.parse import urlparse
@@ -904,7 +910,11 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
 
     critic_ratings = _parse_critic_ratings(critique, questions)
 
-    # Build identical evidence block to Writer A
+    # Build identical evidence block to Writer A — same 40,000-char cap
+    total_sources    = sum(len(research.get(q, [])) for q in questions)
+    MAX_EVIDENCE_CHARS = 40_000
+    chars_per_source   = max(200, min(700, MAX_EVIDENCE_CHARS // max(total_sources, 1)))
+
     evidence_blocks = []
     for q in questions:
         rating = critic_ratings.get(q, "Adequate")
@@ -912,7 +922,7 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
         snippets = []
         for hit in hits:
             title   = hit.get("title", "")
-            content = hit.get("content", "")[:700]
+            content = hit.get("content", "")[:chars_per_source]
             url     = hit.get("url", "")
             try:
                 from urllib.parse import urlparse

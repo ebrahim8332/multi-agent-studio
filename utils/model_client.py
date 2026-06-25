@@ -156,9 +156,9 @@ class FallbackChain:
                 self.session_state["_fallback_errors"] = list(errors)
                 continue
 
-        details = " | ".join(errors[-3:])
+        details = " | ".join(errors[-5:])
         raise AllProvidersExhausted(
-            "All models are currently unavailable. Please try again in a few minutes."
+            f"All {len(errors)} models failed. Please try again in a few minutes."
             + (f" Last attempts: {details}" if details else "")
         )
 
