@@ -217,8 +217,8 @@ def _researcher_parallel_panel(placeholder, status: str, running: bool = False,
             if serper_total > 0:
                 st.caption(f"Serper fallback used for {serper_total} result(s) — primary engines returned nothing for some queries.")
 
-            st.caption(f"⚡ All questions searched simultaneously")
-            st.caption(f"{total_sources} unique sources after deduplication")
+            st.caption(f"⚡ All questions searched simultaneously — top 3 per provider selected")
+            st.caption(f"{total_sources} sources selected for analysis")
             if enriched_count > 0:
                 st.caption(f"📄 {enriched_count} sources enriched with full article text (Tavily Extract)")
 

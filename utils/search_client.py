@@ -187,7 +187,11 @@ class SearchChain:
                 except Exception:
                     raw[query][provider] = []
 
-        # Merge, deduplicate, Serper fallback per query
+        # Merge, deduplicate, Serper fallback per query.
+        # Cap to top 3 from Tavily + top 3 from Exa in API rank order.
+        # Both providers rank by semantic relevance — first results are best.
+        TOP_N_PER_PROVIDER = 3
+
         research       = {}
         sources        = []
         provider_stats = {}
@@ -196,36 +200,42 @@ class SearchChain:
             tavily_results = raw[query]["tavily"]
             exa_results    = raw[query]["exa"]
 
+            # Select top 3 from each provider, deduplicate between them
             seen_urls = set()
-            merged    = []
-            for hit in tavily_results + exa_results:
+            selected  = []
+            for hit in tavily_results[:TOP_N_PER_PROVIDER]:
                 url = hit.get("url", "")
                 if url and url not in seen_urls:
                     seen_urls.add(url)
-                    merged.append(hit)
+                    selected.append(hit)
+            for hit in exa_results[:TOP_N_PER_PROVIDER]:
+                url = hit.get("url", "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    selected.append(hit)
 
             # Serper fallback only when both primary providers returned nothing
             serper_count = 0
-            if not merged:
+            if not selected:
                 try:
                     serper_hits = _search_serper(query, max_results)
                     for hit in serper_hits:
                         url = hit.get("url", "")
                         if url and url not in seen_urls:
                             seen_urls.add(url)
-                            merged.append(hit)
+                            selected.append(hit)
                     serper_count = len(serper_hits)
                 except Exception:
                     pass
 
-            research[query] = merged
+            research[query] = selected
             provider_stats[query] = {
-                "tavily": len(tavily_results),
-                "exa":    len(exa_results),
+                "tavily": min(len(tavily_results), TOP_N_PER_PROVIDER),
+                "exa":    min(len(exa_results),    TOP_N_PER_PROVIDER),
                 "serper": serper_count,
             }
 
-            for hit in merged:
+            for hit in selected:
                 url = hit.get("url", "")
                 if url and url not in sources:
                     sources.append(url)
