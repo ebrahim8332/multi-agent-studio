@@ -92,7 +92,7 @@ _STATE_KEYS = [
     "m01_planner_model", "m01_planner_prompt", "m01_inputs", "m01_phase",
     "m01_flagged_questions", "m01_researcher_attempt",
     "m01_call_log",
-    "m01_writer_attempt", "m01_writer_feedback", "m01_fc_feedback", "m01_judge_editing", "m01_fc_editing",
+    "m01_writer_attempt", "m01_writer_feedback", "m01_fc_feedback", "m01_fc_feedback_draft", "m01_judge_feedback_draft", "m01_judge_editing", "m01_fc_editing",
     "m01_judge_result", "m01_fact_check_result",
 ]
 
@@ -1288,19 +1288,19 @@ div[data-baseweb="select"] * { cursor: pointer; }
                         st.rerun()
             else:
                 suggestion = _build_fact_check_feedback(fc_result)
-                if "m01_fc_feedback_input" not in st.session_state:
-                    st.session_state["m01_fc_feedback_input"] = suggestion
                 st.markdown("**What should the Writer fix?**")
                 st.caption("Pre-filled from unsupported claims — edit or use as-is.")
-                st.text_area(
+                draft_value = st.session_state.get("m01_fc_feedback_draft", suggestion)
+                typed = st.text_area(
                     "Feedback for re-draft", height=140,
-                    key="m01_fc_feedback_input",
+                    value=draft_value,
                     label_visibility="collapsed",
                 )
+                st.session_state["m01_fc_feedback_draft"] = typed
                 col1, col2 = st.columns([1, 1])
                 with col1:
                     if st.button("Submit and re-draft →", type="primary", key="m01_fc_submit_btn"):
-                        feedback = st.session_state.get("m01_fc_feedback_input", "")
+                        feedback = st.session_state.get("m01_fc_feedback_draft", suggestion)
                         st.session_state["m01_fc_feedback"]     = feedback
                         st.session_state["m01_writer_feedback"] = feedback
                         st.session_state["m01_writer_attempt"]  = writer_attempt + 1
@@ -1531,19 +1531,19 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 st.caption("The Editor will not start until you approve.")
             else:
                 suggestion = _build_redraft_suggestion(judge_result)
-                if "m01_writer_feedback_input" not in st.session_state:
-                    st.session_state["m01_writer_feedback_input"] = suggestion
                 st.markdown("**What should the Writer fix?**")
                 st.caption("Pre-filled from the Judge's findings — edit or use as-is.")
-                st.text_area(
+                draft_value = st.session_state.get("m01_judge_feedback_draft", suggestion)
+                typed = st.text_area(
                     "Feedback for re-draft", height=160,
-                    key="m01_writer_feedback_input",
+                    value=draft_value,
                     label_visibility="collapsed",
                 )
+                st.session_state["m01_judge_feedback_draft"] = typed
                 col1, col2 = st.columns([1, 1])
                 with col1:
                     if st.button("Submit and re-draft →", type="primary", key="m01_judge_submit_btn"):
-                        feedback = st.session_state.get("m01_writer_feedback_input", "")
+                        feedback = st.session_state.get("m01_judge_feedback_draft", suggestion)
                         st.session_state["m01_writer_feedback"] = feedback
                         st.session_state["m01_writer_attempt"]  = writer_attempt + 1
                         st.session_state["m01_judge_editing"]   = False
