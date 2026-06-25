@@ -729,7 +729,9 @@ def run_judge(state: dict, chain) -> dict:
             "content": (
                 f"Topic: {topic}\n"
                 f"Target format: {format_style}\n"
-                f"Target length: approximately {target_words:,} words\n"
+                f"Target length: {target_words:,} words minimum\n"
+                f"Actual word count: {words:,} words — "
+                + ("requirement met.\n" if word_count_ok else f"requirement NOT met (minimum acceptable: {min_words:,}).\n")
                 + (f"Required angle: {angle}\n" if angle else "")
                 + f"\nResearch questions the paper must address:\n"
                 + "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
