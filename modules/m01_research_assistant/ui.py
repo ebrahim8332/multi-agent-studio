@@ -230,17 +230,19 @@ def _researcher_parallel_panel(placeholder, status: str, running: bool = False,
 
 def render() -> None:
     st.title("📝 Research Assistant")
-    st.caption("Six agents research, critique, write, judge, and edit a structured paper.")
+    st.caption("Eight agents research, critique, debate, fact-check, judge, and edit a structured paper.")
     st.markdown(
-        "Six specialized AI agents run in sequence — an **agent pipeline** where each agent "
-        "builds on the work of the one before it. "
+        "Eight AI agents work in sequence — an **agent pipeline** where each agent builds on the work "
+        "of the one before it. Two agents run in parallel (Writers A and B). "
         "✋ marks a human checkpoint where you review and approve before the next agent runs.\n\n"
-        "- **Planner agent** — breaks your topic into focused research questions ✋\n"
-        "- **Researcher agent** — searches the live web for evidence on each question\n"
-        "- **Critic agent** — evaluates source quality and flags gaps ✋\n"
-        "- **Writer agent** — drafts a full structured paper from the evidence\n"
-        "- **Judge agent** — scores the draft on four quality dimensions ✋\n"
-        "- **Editor agent** — polishes the language and confirms the format"
+        "- **Planner** — breaks your topic into focused research questions ✋\n"
+        "- **Researcher** — searches the live web, all questions simultaneously (Tavily + Exa in parallel)\n"
+        "- **Critic** — evaluates source quality and flags gaps ✋\n"
+        "- **Writer A + Writer B** — two agents draft simultaneously: one mainstream, one contrarian\n"
+        "- **Debate Judge** — picks the stronger draft and identifies what to incorporate from the other\n"
+        "- **Fact Checker** — cross-checks claims in the winning draft against source evidence ✋\n"
+        "- **Judge** — scores the draft on four quality dimensions ✋\n"
+        "- **Editor** — polishes the language and confirms the format"
     )
     st.markdown("---")
 
