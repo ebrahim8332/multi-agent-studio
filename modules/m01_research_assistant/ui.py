@@ -1055,7 +1055,6 @@ div[data-baseweb="select"] * { cursor: pointer; }
         _agent_panel(editor_ph, "Agent 8: Editor", "Polishes the draft and removes weak language", STATUS_WAITING)
 
         with debate_gate_ph.container():
-            st.info(_format_debate_output(debate_result))
             if st.button("Continue to Fact Checker →", type="primary", key="m01_debate_continue_btn"):
                 st.session_state["m01_phase"] = "fact_check_running"
                 st.rerun()
