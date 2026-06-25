@@ -101,12 +101,14 @@ _STATE_KEYS = [
 
 def _agent_panel(placeholder, label: str, description: str, status: str,
                  output: str = "", model: str = "", expanded: bool = False,
-                 running: bool = False, prompt: list = None) -> None:
+                 running: bool = False, prompt: list = None,
+                 running_label: str = None) -> None:
     """Renders a single agent panel into a placeholder.
 
     prompt: list of message dicts (system/user). When provided, shows a
     'View prompt sent to AI' expander so the user can inspect what the
     model actually received.
+    running_label: overrides the default 'Working... · model' caption when set.
     """
     with placeholder.container():
         col1, col2 = st.columns([3, 1])
@@ -115,9 +117,12 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
         with col2:
             st.markdown(status)
         if running:
-            locked_model = st.session_state.get("locked_model_name", "")
-            running_caption = f"⏳ Working... · {locked_model}" if locked_model else "⏳ Working..."
-            st.caption(running_caption)
+            if running_label:
+                st.caption(running_label)
+            else:
+                locked_model = st.session_state.get("locked_model_name", "")
+                running_caption = f"⏳ Working... · {locked_model}" if locked_model else "⏳ Working..."
+                st.caption(running_caption)
             components.html(
                 """
                 <script>
@@ -1691,7 +1696,8 @@ def _combined_flag_check(full_state: dict, chain, researcher_ph, quality_gate_ph
     # Pass 2: LLM relevance check — show Researcher as still active during the call
     _agent_panel(researcher_ph, "Agent 2: Researcher",
                  "Validating source relevance...",
-                 STATUS_RUNNING, running=True)
+                 STATUS_RUNNING, running=True,
+                 running_label="⏳ Quality gate: checking relevance with LLM...")
 
     llm_flagged = flag_irrelevant_questions(research, chain, skip=domain_flagged)
 
