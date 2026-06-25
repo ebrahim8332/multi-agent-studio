@@ -148,6 +148,73 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
         st.divider()
 
 
+def _researcher_parallel_panel(placeholder, status: str, running: bool = False,
+                                provider_stats: dict = None, total_sources: int = 0,
+                                prompt: list = None) -> None:
+    """
+    Renders the Researcher panel with a side-by-side Tavily | Exa layout.
+    Shows live 'Searching...' when running=True, and result counts when done.
+    provider_stats: {query: {"tavily": N, "exa": N, "serper": N}}
+    """
+    with placeholder.container():
+        col_label, col_status = st.columns([3, 1])
+        with col_label:
+            st.markdown("**Agent 2: Researcher**  \nSearches the web for evidence on each question")
+        with col_status:
+            st.markdown(status)
+
+        # Side-by-side engine display
+        col_tavily, col_exa = st.columns(2)
+
+        if running:
+            with col_tavily:
+                st.info("🔄 **Tavily**\nSearching...")
+            with col_exa:
+                st.info("🔄 **Exa**\nSearching...")
+            components.html(
+                """
+                <script>
+                    var frames = window.parent.document.querySelectorAll('iframe');
+                    for (var i = 0; i < frames.length; i++) {
+                        try {
+                            if (frames[i].contentWindow === window) {
+                                frames[i].scrollIntoView({behavior: 'smooth', block: 'center'});
+                                break;
+                            }
+                        } catch(e) {}
+                    }
+                </script>
+                """,
+                height=0,
+            )
+        elif provider_stats:
+            tavily_total = sum(v.get("tavily", 0) for v in provider_stats.values())
+            exa_total    = sum(v.get("exa",    0) for v in provider_stats.values())
+            serper_total = sum(v.get("serper", 0) for v in provider_stats.values())
+
+            with col_tavily:
+                icon = "✅" if tavily_total > 0 else "⚠️"
+                st.success(f"{icon} **Tavily**\n{tavily_total} results")
+            with col_exa:
+                icon = "✅" if exa_total > 0 else "⚠️"
+                st.success(f"{icon} **Exa**\n{exa_total} results")
+
+            if serper_total > 0:
+                st.caption(f"Serper fallback used for {serper_total} result(s) — primary engines returned nothing for some queries.")
+
+            st.caption(f"{total_sources} unique sources after deduplication")
+
+        if prompt:
+            with st.expander("🔍 View prompt sent to AI", expanded=False):
+                for msg in prompt:
+                    role    = msg.get("role", "").upper()
+                    content = msg.get("content", "")
+                    st.caption(f"── {role} ──")
+                    st.code(content[:3000] + ("\n\n… [truncated]" if len(content) > 3000 else ""), language=None)
+
+        st.divider()
+
+
 # ── Main render ───────────────────────────────────────────────────────────────
 
 def render() -> None:
@@ -379,13 +446,9 @@ div[data-baseweb="select"] * { cursor: pointer; }
         chain         = get_chain(st.session_state)
 
         # ── Researcher ────────────────────────────────────────────────────────
-        _agent_panel(
-            researcher_ph, "Agent 2: Researcher",
-            "Searching the web for evidence on each question",
-            STATUS_RUNNING, running=True,
-        )
+        _researcher_parallel_panel(researcher_ph, STATUS_RUNNING, running=True)
         try:
-            with st.spinner("Searching the web... (this takes 10–20 seconds)"):
+            with st.spinner("Tavily and Exa searching simultaneously... (10–20 seconds)"):
                 result = run_researcher(full_state)
             full_state.update(result)
         except Exception as e:
@@ -396,14 +459,21 @@ div[data-baseweb="select"] * { cursor: pointer; }
             return
 
         researcher_out    = _format_researcher_output(full_state)
-        researcher_model  = full_state.get("model_used", "")
+        researcher_model  = "Tavily + Exa"
         researcher_prompt = result.get("prompt_sent", [])
-        agent_outputs["researcher"] = {"output": researcher_out, "model": researcher_model, "prompt": researcher_prompt}
-        _agent_panel(
-            researcher_ph, "Agent 2: Researcher",
-            "Searches the web for evidence on each question",
-            STATUS_COMPLETE, output=researcher_out, model=researcher_model,
-            expanded=True, prompt=researcher_prompt,
+        researcher_stats  = full_state.get("provider_stats", {})
+        agent_outputs["researcher"] = {
+            "output":        researcher_out,
+            "model":         researcher_model,
+            "prompt":        researcher_prompt,
+            "stats":         researcher_stats,
+            "total_sources": len(full_state.get("sources", [])),
+        }
+        _researcher_parallel_panel(
+            researcher_ph, STATUS_COMPLETE,
+            provider_stats=researcher_stats,
+            total_sources=len(full_state.get("sources", [])),
+            prompt=researcher_prompt,
         )
 
         # ── Quality gate ──────────────────────────────────────────────────────
@@ -413,13 +483,11 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
         while len(flagged) > 2 and researcher_attempt <= MAX_RESEARCHER_RETRIES:
             researcher_attempt += 1
-            _agent_panel(
-                researcher_ph, "Agent 2: Researcher",
-                f"Re-searching {len(flagged)} weak question(s) — attempt {researcher_attempt} of {MAX_RESEARCHER_RETRIES + 1}",
-                STATUS_RUNNING, running=True,
+            _researcher_parallel_panel(
+                researcher_ph, STATUS_RUNNING, running=True,
             )
             try:
-                with st.spinner(f"Re-searching {len(flagged)} question(s)..."):
+                with st.spinner(f"Re-searching {len(flagged)} weak question(s) with Tavily + Exa..."):
                     result = run_researcher(full_state, target_questions=flagged)
                 full_state.update(result)
             except Exception:
@@ -427,13 +495,19 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
             researcher_out    = _format_researcher_output(full_state)
             researcher_prompt = result.get("prompt_sent", [])
-            agent_outputs["researcher"] = {"output": researcher_out, "model": researcher_model, "prompt": researcher_prompt}
-            _agent_panel(
-                researcher_ph, "Agent 2: Researcher",
-                "Searches the web for evidence on each question",
-                STATUS_COMPLETE, output=researcher_out,
-                model=f"{researcher_model} · {researcher_attempt} attempts",
-                expanded=True, prompt=researcher_prompt,
+            researcher_stats  = full_state.get("provider_stats", {})
+            agent_outputs["researcher"] = {
+                "output":        researcher_out,
+                "model":         f"{researcher_model} · {researcher_attempt} attempts",
+                "prompt":        researcher_prompt,
+                "stats":         researcher_stats,
+                "total_sources": len(full_state.get("sources", [])),
+            }
+            _researcher_parallel_panel(
+                researcher_ph, STATUS_COMPLETE,
+                provider_stats=researcher_stats,
+                total_sources=len(full_state.get("sources", [])),
+                prompt=researcher_prompt,
             )
             flagged = _combined_flag_check(
                 full_state, chain, researcher_ph, quality_gate_ph,
@@ -478,11 +552,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _agent_panel(researcher_ph, "Agent 2: Researcher",
-                     f"Completed {r_attempt + 1} search attempt(s)",
-                     STATUS_COMPLETE, output=researcher_out,
-                     model=f"{researcher_model} · {r_attempt + 1} attempts",
-                     prompt=researcher_prompt)
+        _render_researcher_done(researcher_ph, agent_outputs)
 
         with quality_gate_ph.container():
             st.warning(
@@ -532,10 +602,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _agent_panel(researcher_ph, "Agent 2: Researcher",
-                     "Searches the web for evidence on each question",
-                     STATUS_COMPLETE, output=researcher_out, model=researcher_model,
-                     prompt=researcher_prompt)
+        _render_researcher_done(researcher_ph, agent_outputs)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assessing source quality and flagging gaps",
@@ -618,10 +685,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _agent_panel(researcher_ph, "Agent 2: Researcher",
-                     "Searches the web for evidence on each question",
-                     STATUS_COMPLETE, output=researcher_out, model=researcher_model,
-                     prompt=researcher_prompt)
+        _render_researcher_done(researcher_ph, agent_outputs)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
@@ -739,10 +803,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _agent_panel(researcher_ph, "Agent 2: Researcher",
-                     "Searches the web for evidence on each question",
-                     STATUS_COMPLETE, output=researcher_out, model=researcher_model,
-                     prompt=researcher_prompt)
+        _render_researcher_done(researcher_ph, agent_outputs)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
@@ -810,10 +871,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _agent_panel(researcher_ph, "Agent 2: Researcher",
-                     "Searches the web for evidence on each question",
-                     STATUS_COMPLETE, output=researcher_out, model=researcher_model,
-                     prompt=researcher_prompt)
+        _render_researcher_done(researcher_ph, agent_outputs)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
@@ -881,10 +939,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _agent_panel(researcher_ph, "Agent 2: Researcher",
-                     "Searches the web for evidence on each question",
-                     STATUS_COMPLETE, output=researcher_out, model=researcher_model,
-                     prompt=researcher_prompt)
+        _render_researcher_done(researcher_ph, agent_outputs)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
@@ -1028,10 +1083,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _agent_panel(researcher_ph, "Agent 2: Researcher",
-                     "Searches the web for evidence on each question",
-                     STATUS_COMPLETE, output=researcher_out, model=researcher_model,
-                     prompt=researcher_prompt)
+        _render_researcher_done(researcher_ph, agent_outputs)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
@@ -1097,7 +1149,9 @@ div[data-baseweb="select"] * { cursor: pointer; }
 def _combined_flag_check(full_state: dict, chain, researcher_ph, quality_gate_ph,
                          researcher_out: str, researcher_model_label: str) -> list[str]:
     """Two-pass quality check. Shows validation progress on the Researcher panel."""
-    research = full_state.get("research", {})
+    research       = full_state.get("research", {})
+    provider_stats = full_state.get("provider_stats", {})
+    total_sources  = len(full_state.get("sources", []))
 
     # Pass 1: objective domain check — instant
     domain_flagged = flag_weak_questions(research)
@@ -1109,13 +1163,26 @@ def _combined_flag_check(full_state: dict, chain, researcher_ph, quality_gate_ph
 
     llm_flagged = flag_irrelevant_questions(research, chain, skip=domain_flagged)
 
-    # Restore Researcher to complete
-    _agent_panel(researcher_ph, "Agent 2: Researcher",
-                 "Searches the web for evidence on each question",
-                 STATUS_COMPLETE, output=researcher_out, model=researcher_model_label)
+    # Restore Researcher to complete (parallel panel)
+    _researcher_parallel_panel(
+        researcher_ph, STATUS_COMPLETE,
+        provider_stats=provider_stats,
+        total_sources=total_sources,
+    )
 
     combined = domain_flagged + [q for q in llm_flagged if q not in domain_flagged]
     return combined
+
+
+def _render_researcher_done(placeholder, agent_outputs: dict) -> None:
+    """Re-renders the Researcher parallel panel from stored agent_outputs. Used by all phases."""
+    r = agent_outputs.get("researcher", {})
+    _researcher_parallel_panel(
+        placeholder, STATUS_COMPLETE,
+        provider_stats=r.get("stats", {}),
+        total_sources=r.get("total_sources", 0),
+        prompt=r.get("prompt", []),
+    )
 
 
 def _start_planner(topic, angle, audience, format_style, length, planner_ph) -> None:
@@ -1149,11 +1216,33 @@ def _start_planner(topic, angle, audience, format_style, length, planner_ph) -> 
 
 
 def _format_researcher_output(full_state: dict) -> str:
-    research = full_state.get("research", {})
-    sources  = full_state.get("sources", [])
-    lines = [f"**{len(sources)} sources collected across {len(research)} questions**\n"]
+    research       = full_state.get("research", {})
+    sources        = full_state.get("sources", [])
+    provider_stats = full_state.get("provider_stats", {})
+
+    tavily_total = sum(v.get("tavily", 0) for v in provider_stats.values())
+    exa_total    = sum(v.get("exa",    0) for v in provider_stats.values())
+    serper_total = sum(v.get("serper", 0) for v in provider_stats.values())
+
+    header = f"**{len(sources)} unique sources across {len(research)} questions**"
+    if provider_stats:
+        parts = []
+        if tavily_total:
+            parts.append(f"Tavily: {tavily_total}")
+        if exa_total:
+            parts.append(f"Exa: {exa_total}")
+        if serper_total:
+            parts.append(f"Serper (fallback): {serper_total}")
+        header += "  \n" + " · ".join(parts)
+
+    lines = [header, ""]
     for q, hits in research.items():
-        lines.append(f"- *{q[:70]}...* — {len(hits)} results")
+        stats  = provider_stats.get(q, {})
+        t_cnt  = stats.get("tavily", 0)
+        e_cnt  = stats.get("exa", 0)
+        s_cnt  = stats.get("serper", 0)
+        detail = f"Tavily {t_cnt} · Exa {e_cnt}" + (f" · Serper {s_cnt}" if s_cnt else "")
+        lines.append(f"- *{q[:70]}{'...' if len(q) > 70 else ''}* — {len(hits)} results ({detail})")
     return "\n".join(lines)
 
 

@@ -17,9 +17,15 @@ Provider order:
     2. Exa     — designed for AI agents, 1,000 free searches/month
     3. Serper  — Google results, 2,500 free searches/month
     4. Empty   — graceful degradation, never crashes the pipeline
+
+Parallel search:
+    search_parallel() runs Tavily and Exa simultaneously using ThreadPoolExecutor.
+    Results are merged and deduplicated by URL. Serper is used as fallback only
+    if both Tavily and Exa return zero results for a query.
 """
 
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # ── Provider functions ────────────────────────────────────────────────────────
@@ -137,6 +143,78 @@ class SearchChain:
                 if url and url not in sources:
                     sources.append(url)
         return research, sources
+
+    def search_parallel(self, queries: list[str], max_results: int = 3) -> tuple[dict, list[str], dict]:
+        """
+        Runs Tavily and Exa simultaneously for each query using ThreadPoolExecutor.
+        Merges and deduplicates results by URL. If both return zero results for a query,
+        falls back to Serper.
+
+        Returns:
+            research:       {query: [merged result dicts]}
+            sources:        deduplicated list of all URLs across all queries
+            provider_stats: {query: {"tavily": count, "exa": count, "serper": count}}
+                            Counts show how many results each provider contributed per query.
+        """
+        research = {}
+        sources = []
+        provider_stats = {}
+
+        for query in queries:
+            # Run Tavily and Exa in parallel
+            tavily_results = []
+            exa_results = []
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                future_tavily = executor.submit(_search_tavily, query, max_results)
+                future_exa    = executor.submit(_search_exa,    query, max_results)
+
+                try:
+                    tavily_results = future_tavily.result(timeout=30)
+                except Exception:
+                    tavily_results = []
+
+                try:
+                    exa_results = future_exa.result(timeout=30)
+                except Exception:
+                    exa_results = []
+
+            # Merge and deduplicate by URL
+            seen_urls = set()
+            merged = []
+            for hit in tavily_results + exa_results:
+                url = hit.get("url", "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    merged.append(hit)
+
+            # Serper fallback only when both primary providers returned nothing
+            serper_count = 0
+            if not merged:
+                try:
+                    serper_hits = _search_serper(query, max_results)
+                    for hit in serper_hits:
+                        url = hit.get("url", "")
+                        if url and url not in seen_urls:
+                            seen_urls.add(url)
+                            merged.append(hit)
+                    serper_count = len(serper_hits)
+                except Exception:
+                    pass
+
+            research[query] = merged
+            provider_stats[query] = {
+                "tavily": len(tavily_results),
+                "exa":    len(exa_results),
+                "serper": serper_count,
+            }
+
+            for hit in merged:
+                url = hit.get("url", "")
+                if url and url not in sources:
+                    sources.append(url)
+
+        return research, sources, provider_stats
 
 
 def get_search_chain() -> SearchChain:

@@ -403,24 +403,24 @@ def flag_irrelevant_questions(research: dict, chain, skip: list = None) -> list[
 
 def run_researcher(state: dict, target_questions: list = None) -> dict:
     """
-    Searches the web for research questions using the search fallback chain.
-    Tries Tavily first, then Exa, then Serper. Never crashes the pipeline.
+    Searches the web for research questions using parallel search (Tavily + Exa simultaneously).
+    Serper is used as fallback only if both primary providers return zero results for a query.
     Search depth scales to the selected length.
 
     target_questions: if provided, only re-searches those specific questions
     and merges the new results back into the existing research dict.
     Used by the retry loop to fix weak questions without losing good results.
 
-    Returns: research (dict), sources (list)
+    Returns: research (dict), sources (list), provider_stats (dict)
     """
     questions   = target_questions if target_questions is not None else state["questions"]
     length      = state.get("length", "Standard length (~2,000 words, 4-5 pages)")
     max_results = _search_depth(length)
     search      = get_search_chain()
-    new_research, new_sources = search.search_multi(questions, max_results=max_results)
+    new_research, new_sources, provider_stats = search.search_parallel(questions, max_results=max_results)
 
     prompt_sent = [
-        {"role": "system", "content": f"Search engine: {search.active_provider_name()}\nMax results per query: {max_results}"},
+        {"role": "system", "content": f"Search engines: Tavily + Exa (parallel)\nMax results per query per engine: {max_results}"},
         {"role": "user",   "content": "Search queries:\n\n" + "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))},
     ]
 
@@ -430,9 +430,11 @@ def run_researcher(state: dict, target_questions: list = None) -> dict:
         merged.update(new_research)
         existing_sources = list(state.get("sources", []))
         merged_sources   = existing_sources + [s for s in new_sources if s not in existing_sources]
-        return {"research": merged, "sources": merged_sources, "prompt_sent": prompt_sent}
+        existing_stats   = dict(state.get("provider_stats", {}))
+        existing_stats.update(provider_stats)
+        return {"research": merged, "sources": merged_sources, "provider_stats": existing_stats, "prompt_sent": prompt_sent}
 
-    return {"research": new_research, "sources": new_sources, "prompt_sent": prompt_sent}
+    return {"research": new_research, "sources": new_sources, "provider_stats": provider_stats, "prompt_sent": prompt_sent}
 
 
 # ── Agent 3: Critic ───────────────────────────────────────────────────────────
