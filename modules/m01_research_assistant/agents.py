@@ -280,14 +280,6 @@ def run_planner(state: dict, chain, user_edits: str = "") -> dict:
 
 # ── Agent 2: Researcher ───────────────────────────────────────────────────────
 
-def _search_depth(length: str) -> int:
-    """Returns max_results per question based on selected length."""
-    if "Short" in length:
-        return 3
-    elif "Full" in length:
-        return 8
-    else:
-        return 6
 
 
 def flag_weak_questions(research: dict) -> list[str]:
@@ -416,10 +408,8 @@ def run_researcher(state: dict, target_questions: list = None) -> dict:
     Returns: research (dict), sources (list), provider_stats (dict), enriched_count (int)
     """
     questions   = target_questions if target_questions is not None else state["questions"]
-    length      = state.get("length", "Standard length (~2,000 words, 4-5 pages)")
-    max_results = _search_depth(length)
     search      = get_search_chain()
-    new_research, new_sources, provider_stats = search.search_parallel(questions, max_results=max_results)
+    new_research, new_sources, provider_stats = search.search_parallel(questions, max_results=3)
 
     # Enrich top sources with full article text
     new_research, enriched_count = search.enrich_top_sources(new_research)
@@ -427,7 +417,7 @@ def run_researcher(state: dict, target_questions: list = None) -> dict:
     prompt_sent = [
         {"role": "system", "content": (
             f"Search engines: Tavily + Exa (all questions fired simultaneously)\n"
-            f"Max results per query per engine: {max_results}"
+            f"Max results per query per engine: 3"
         )},
         {"role": "user", "content": "Search queries:\n\n" + "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))},
     ]
