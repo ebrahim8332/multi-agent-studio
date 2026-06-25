@@ -112,12 +112,8 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
         bordered = "Writer" in label
     with placeholder.container():
         if bordered:
-            with st.container(border=True):
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.markdown(f"**{label}**  \n{description}")
-                with col2:
-                    st.markdown(status)
+            box = st.success if status == STATUS_COMPLETE else st.info
+            with box(f"**{label}**  \n{description}  \n{status}"):
                 if running:
                     if running_label:
                         st.caption(running_label)
