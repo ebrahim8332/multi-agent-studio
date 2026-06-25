@@ -162,12 +162,14 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
 
 def _researcher_parallel_panel(placeholder, status: str, running: bool = False,
                                 provider_stats: dict = None, total_sources: int = 0,
-                                prompt: list = None, enriched_count: int = 0) -> None:
+                                prompt: list = None, enriched_count: int = 0,
+                                questions: list = None) -> None:
     """
     Renders the Researcher panel with a side-by-side Tavily | Exa layout.
     Shows live 'Searching...' when running=True, and result counts when done.
     provider_stats: {query: {"tavily": N, "exa": N, "serper": N}}
     enriched_count: number of sources enriched with full article text via Tavily Extract
+    questions: list of research questions — shown in a collapsed expander when complete
     """
     with placeholder.container():
         col_label, col_status = st.columns([3, 1])
@@ -219,6 +221,11 @@ def _researcher_parallel_panel(placeholder, status: str, running: bool = False,
             st.caption(f"{total_sources} unique sources after deduplication")
             if enriched_count > 0:
                 st.caption(f"📄 {enriched_count} sources enriched with full article text (Tavily Extract)")
+
+            if questions:
+                with st.expander(f"Research questions ({len(questions)})", expanded=False):
+                    for i, q in enumerate(questions):
+                        st.markdown(f"{i+1}. {q}")
 
         if prompt:
             with st.expander("🔍 View prompt sent to AI", expanded=False):
@@ -367,8 +374,11 @@ div[data-baseweb="select"] * { cursor: pointer; }
     quality_gate_ph    = st.empty()
     critic_ph          = st.empty()
     critic_gate_ph     = st.empty()
-    writer_a_ph        = st.empty()
-    writer_b_ph        = st.empty()
+    _writers_cols      = st.columns(2)
+    with _writers_cols[0]:
+        writer_a_ph    = st.empty()
+    with _writers_cols[1]:
+        writer_b_ph    = st.empty()
     debate_judge_ph    = st.empty()
     debate_gate_ph     = st.empty()
     fact_checker_ph    = st.empty()
@@ -628,7 +638,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _render_researcher_done(researcher_ph, agent_outputs)
+        _render_researcher_done(researcher_ph, agent_outputs, questions=questions)
 
         with quality_gate_ph.container():
             st.warning(
@@ -679,7 +689,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _render_researcher_done(researcher_ph, agent_outputs)
+        _render_researcher_done(researcher_ph, agent_outputs, questions=questions)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assessing source quality and flagging gaps",
@@ -764,7 +774,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _render_researcher_done(researcher_ph, agent_outputs)
+        _render_researcher_done(researcher_ph, agent_outputs, questions=questions)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
@@ -879,7 +889,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _render_researcher_done(researcher_ph, agent_outputs)
+        _render_researcher_done(researcher_ph, agent_outputs, questions=questions)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
@@ -1042,7 +1052,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _render_researcher_done(researcher_ph, agent_outputs)
+        _render_researcher_done(researcher_ph, agent_outputs, questions=questions)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
@@ -1101,7 +1111,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _render_researcher_done(researcher_ph, agent_outputs)
+        _render_researcher_done(researcher_ph, agent_outputs, questions=questions)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
@@ -1183,7 +1193,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _render_researcher_done(researcher_ph, agent_outputs)
+        _render_researcher_done(researcher_ph, agent_outputs, questions=questions)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
@@ -1294,7 +1304,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _render_researcher_done(researcher_ph, agent_outputs)
+        _render_researcher_done(researcher_ph, agent_outputs, questions=questions)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
@@ -1379,7 +1389,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _render_researcher_done(researcher_ph, agent_outputs)
+        _render_researcher_done(researcher_ph, agent_outputs, questions=questions)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
@@ -1540,7 +1550,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                      "Breaks the topic into focused research questions",
                      STATUS_COMPLETE, output=planner_out, model=p_model + attempt_note, prompt=p_prompt)
         approval_ph.empty()
-        _render_researcher_done(researcher_ph, agent_outputs)
+        _render_researcher_done(researcher_ph, agent_outputs, questions=questions)
         quality_gate_ph.empty()
         _agent_panel(critic_ph, "Agent 3: Critic",
                      "Assesses source quality and flags gaps",
@@ -1600,9 +1610,10 @@ div[data-baseweb="select"] * { cursor: pointer; }
     # ══════════════════════════════════════════════════════════════════════════
     if phase == "complete":
         saved = st.session_state.get("m01_agent_outputs", {})
+        _complete_questions = st.session_state.get("m01_pending_state", {}).get("questions", [])
         for name, label, desc in AGENTS:
             if name == "researcher":
-                _render_researcher_done(researcher_ph, saved)
+                _render_researcher_done(researcher_ph, saved, questions=_complete_questions)
             elif name in ph:
                 out    = saved.get(name, {}).get("output", "")
                 model  = saved.get(name, {}).get("model", "")
@@ -1713,13 +1724,14 @@ def _combined_flag_check(full_state: dict, chain, researcher_ph, quality_gate_ph
         researcher_ph, STATUS_COMPLETE,
         provider_stats=provider_stats,
         total_sources=total_sources,
+        questions=list(full_state.get("questions", [])),
     )
 
     combined = domain_flagged + [q for q in llm_flagged if q not in domain_flagged]
     return combined
 
 
-def _render_researcher_done(placeholder, agent_outputs: dict) -> None:
+def _render_researcher_done(placeholder, agent_outputs: dict, questions: list = None) -> None:
     """Re-renders the Researcher parallel panel from stored agent_outputs. Used by all phases."""
     r = agent_outputs.get("researcher", {})
     _researcher_parallel_panel(
@@ -1728,6 +1740,7 @@ def _render_researcher_done(placeholder, agent_outputs: dict) -> None:
         total_sources=r.get("total_sources", 0),
         prompt=r.get("prompt", []),
         enriched_count=r.get("enriched_count", 0),
+        questions=questions or [],
     )
 
 
