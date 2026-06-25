@@ -376,11 +376,9 @@ div[data-baseweb="select"] * { cursor: pointer; }
     critic_gate_ph     = st.empty()
     _writers_cols      = st.columns(2)
     with _writers_cols[0]:
-        with st.container(border=True):
-            writer_a_ph = st.empty()
+        writer_a_ph    = st.empty()
     with _writers_cols[1]:
-        with st.container(border=True):
-            writer_b_ph = st.empty()
+        writer_b_ph    = st.empty()
     debate_judge_ph    = st.empty()
     debate_gate_ph     = st.empty()
     fact_checker_ph    = st.empty()
