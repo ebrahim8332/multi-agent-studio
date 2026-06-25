@@ -45,7 +45,7 @@ APPROX_PRICING = {
     "gemini-2.0-flash-lite":                     (0.075,  0.30),
     "gemini-flash-latest":                       (0.075,  0.30),
     "llama-3.3-70b-versatile":                   (0.59,   0.79),
-    "meta-llama/llama-4-scout-17b-16e-instruct": (0.11,   0.34),
+    "qwen/qwen3.6-27b":                          (0.60,   3.00),  # Groq listed price — verify at groq.com/pricing
     "qwen/qwen3-32b":                            (0.29,   0.59),
     "openai/gpt-oss-120b":                       (0.90,   0.90),
     "llama-3.1-8b-instant":                      (0.05,   0.08),
@@ -69,7 +69,7 @@ def build_chain() -> list[BaseProvider]:
       [5]  gemini-2.0-flash       — deprecated June 2026, 8K output cap
       [6]  gemini-2.0-flash-lite  — deprecated June 2026, 8K output cap
       [7]  llama-3.3-70b-versatile — best Groq all-rounder, 86% MMLU
-      [8]  llama-4-scout-17b      — strong, multimodal, 84% MMLU
+      [8]  qwen3.6-27b            — Groq-recommended replacement for Llama 4 Scout (deprecated June 2026)
       [9]  qwen3-32b              — competitive coding and reasoning, 85.7% MMLU
       [10] gpt-oss-120b           — large reasoning model, benchmarks not fully published
       [11] llama-3.1-8b-instant   — smallest model, fast, high RPD

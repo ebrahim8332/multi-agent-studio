@@ -5,12 +5,14 @@ from groq import Groq
 from utils.base import BaseProvider, FallbackTrigger
 
 # Groq models in fallback order. Free-tier limits as of June 2026.
-TIER1_MODEL = "llama-3.3-70b-versatile"                   # 12K TPM, 100K TPD — best quality
-TIER2_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # 30K TPM, 500K TPD — Llama 4
-TIER3_MODEL = "qwen/qwen3-32b"                             # 6K TPM,  500K TPD — strong instruction following
-TIER4_MODEL = "openai/gpt-oss-120b"                        # 8K TPM,  200K TPD — large model
-TIER5_MODEL = "llama-3.1-8b-instant"                       # 6K TPM,  500K TPD — fast, high RPD
-TIER6_MODEL = "openai/gpt-oss-20b"                         # smaller/faster sibling to 120B — last resort
+# llama-4-scout-17b removed June 2026 — deprecated by Groq, decommissioned July 17 2026.
+# Replaced with qwen3.6-27b per Groq's own recommendation.
+TIER1_MODEL = "llama-3.3-70b-versatile"  # 12K TPM, 100K TPD — best quality
+TIER2_MODEL = "qwen/qwen3.6-27b"         # Groq-recommended replacement for Llama 4 Scout
+TIER3_MODEL = "qwen/qwen3-32b"           # 6K TPM,  500K TPD — strong instruction following
+TIER4_MODEL = "openai/gpt-oss-120b"      # 8K TPM,  200K TPD — large model
+TIER5_MODEL = "llama-3.1-8b-instant"     # 6K TPM,  500K TPD — fast, high RPD
+TIER6_MODEL = "openai/gpt-oss-20b"       # smaller/faster sibling to 120B — last resort
 
 
 class GroqProvider(BaseProvider):
@@ -54,17 +56,29 @@ class GroqProvider(BaseProvider):
               max_tokens: int | None = None) -> tuple[str, int, int]:
         if max_tokens is None:
             max_tokens = int(os.getenv("GROQ_MAX_COMPLETION_TOKENS", "4000"))
-        response = self.client.chat.completions.create(
+
+        kwargs = dict(
             model=self.model_name,
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
             timeout=timeout,
         )
+        response = self.client.chat.completions.create(**kwargs)
 
         # Extract token counts from usage
         usage = getattr(response, "usage", None)
         input_tokens  = getattr(usage, "prompt_tokens",     0) or 0
         output_tokens = getattr(usage, "completion_tokens", 0) or 0
 
-        return response.choices[0].message.content, input_tokens, output_tokens
+        text = response.choices[0].message.content or ""
+        # Some Groq models (e.g. qwen3.6-27b) prepend a <think>...</think> block.
+        # Strip it so pipeline agents receive clean prose.
+        # Case 1: complete block — take everything after </think>
+        # Case 2: truncated block (no closing tag) — strip from <think> to end
+        if "</think>" in text:
+            text = text.split("</think>", 1)[1].strip()
+        elif "<think>" in text:
+            text = text.split("<think>", 1)[0].strip()
+
+        return text, input_tokens, output_tokens
