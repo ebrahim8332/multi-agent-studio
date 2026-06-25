@@ -1299,27 +1299,27 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 suggestion = _build_fact_check_feedback(fc_result)
                 st.markdown("**What should the Writer fix?**")
                 st.caption("Pre-filled from unsupported claims — edit or use as-is.")
-                draft_value = st.session_state.get("m01_fc_feedback_draft", suggestion)
-                typed = st.text_area(
-                    "Feedback for re-draft", height=140,
-                    value=draft_value,
-                    label_visibility="collapsed",
-                )
-                st.session_state["m01_fc_feedback_draft"] = typed
-                col1, col2 = st.columns([1, 1])
-                with col1:
-                    if st.button("Submit and re-draft →", type="primary", key="m01_fc_submit_btn"):
-                        feedback = st.session_state.get("m01_fc_feedback_draft", suggestion)
-                        st.session_state["m01_fc_feedback"]     = feedback
-                        st.session_state["m01_writer_feedback"] = feedback
-                        st.session_state["m01_writer_attempt"]  = writer_attempt + 1
-                        st.session_state["m01_fc_editing"]      = False
-                        st.session_state["m01_phase"] = "writing_parallel"
-                        st.rerun()
-                with col2:
-                    if st.button("Cancel", key="m01_fc_cancel_btn"):
-                        st.session_state["m01_fc_editing"] = False
-                        st.rerun()
+                with st.form("m01_fc_redraft_form"):
+                    typed = st.text_area(
+                        "Feedback for re-draft", height=140,
+                        value=suggestion,
+                        label_visibility="collapsed",
+                    )
+                    col1, col2 = st.columns([1, 1])
+                    with col1:
+                        submitted = st.form_submit_button("Submit and re-draft →", type="primary")
+                    with col2:
+                        cancelled = st.form_submit_button("Cancel")
+                if submitted:
+                    st.session_state["m01_fc_feedback"]     = typed
+                    st.session_state["m01_writer_feedback"] = typed
+                    st.session_state["m01_writer_attempt"]  = writer_attempt + 1
+                    st.session_state["m01_fc_editing"]      = False
+                    st.session_state["m01_phase"] = "writing_parallel"
+                    st.rerun()
+                if cancelled:
+                    st.session_state["m01_fc_editing"] = False
+                    st.rerun()
 
         return
 
@@ -1553,26 +1553,27 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 suggestion = _build_redraft_suggestion(judge_result)
                 st.markdown("**What should the Writer fix?**")
                 st.caption("Pre-filled from the Judge's findings — edit or use as-is.")
-                draft_value = st.session_state.get("m01_judge_feedback_draft", suggestion)
-                typed = st.text_area(
-                    "Feedback for re-draft", height=160,
-                    value=draft_value,
-                    label_visibility="collapsed",
-                )
-                st.session_state["m01_judge_feedback_draft"] = typed
-                col1, col2 = st.columns([1, 1])
-                with col1:
-                    if st.button("Submit and re-draft →", type="primary", key="m01_judge_submit_btn"):
-                        feedback = st.session_state.get("m01_judge_feedback_draft", suggestion)
-                        st.session_state["m01_writer_feedback"] = feedback
-                        st.session_state["m01_writer_attempt"]  = writer_attempt + 1
-                        st.session_state["m01_judge_editing"]   = False
-                        st.session_state["m01_phase"] = "writing_parallel"
-                        st.rerun()
-                with col2:
-                    if st.button("Cancel", key="m01_judge_cancel_btn"):
-                        st.session_state["m01_judge_editing"] = False
-                        st.rerun()
+                with st.form("m01_judge_redraft_form"):
+                    typed = st.text_area(
+                        "Feedback for re-draft", height=160,
+                        value=suggestion,
+                        label_visibility="collapsed",
+                    )
+                    col1, col2 = st.columns([1, 1])
+                    with col1:
+                        submitted = st.form_submit_button("Submit and re-draft →", type="primary")
+                    with col2:
+                        cancelled = st.form_submit_button("Cancel")
+                if submitted:
+                    st.session_state["m01_judge_feedback_draft"] = typed
+                    st.session_state["m01_writer_feedback"]      = typed
+                    st.session_state["m01_writer_attempt"]       = writer_attempt + 1
+                    st.session_state["m01_judge_editing"]        = False
+                    st.session_state["m01_phase"] = "writing_parallel"
+                    st.rerun()
+                if cancelled:
+                    st.session_state["m01_judge_editing"] = False
+                    st.rerun()
 
         _agent_panel(editor_ph, "Agent 8: Editor",
                      "Polishes the draft and removes weak language", STATUS_WAITING)
