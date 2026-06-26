@@ -190,7 +190,7 @@ def _question_count(length: str) -> tuple[int, int]:
     if "Short" in length:
         return 2, 3
     elif "Full" in length:
-        return 5, 6
+        return 6, 8
     else:
         return 4, 5
 
@@ -272,8 +272,8 @@ def run_planner(state: dict, chain, user_edits: str = "") -> dict:
     if not questions:
         questions = [l.strip() for l in response.strip().split("\n") if l.strip()]
 
-    # Cap at 6 questions
-    questions = questions[:6]
+    # Cap at 8 questions
+    questions = questions[:8]
 
     return {"questions": questions, "model_used": model, "prompt_sent": messages}
 
@@ -345,7 +345,7 @@ def flag_irrelevant_questions(research: dict, chain, skip: list = None) -> list[
         snippets = []
         for j, h in enumerate(hits, 1):
             title   = h.get("title", "")
-            content = h.get("content", "")[:200]
+            content = h.get("content", "")[:450]
             snippets.append(f"  Source {j}: {title} — {content}")
         block = f"{label}: {question}\n" + "\n".join(snippets)
         question_blocks.append(block)
@@ -473,7 +473,7 @@ def run_critic(state: dict, chain) -> dict:
             for h in hits:
                 title   = h.get("title", "Untitled")
                 url     = h.get("url", "")
-                content = h.get("content", "")[:300]
+                content = h.get("content", "")[:800]
                 try:
                     from urllib.parse import urlparse
                     domain = urlparse(url).netloc.replace("www.", "")
@@ -574,7 +574,7 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
         snippets = []
         for hit in hits:
             title   = hit.get("title", "")
-            content = hit.get("content", "")[:700]
+            content = hit.get("content", "")[:1800]
             url     = hit.get("url", "")
             try:
                 from urllib.parse import urlparse
@@ -846,8 +846,8 @@ def run_editor(state: dict, chain) -> dict:
                 "3. Remove padding, filler phrases, and repetition\n"
                 "4. Confirm the structure exactly matches the format requirements above\n"
                 "5. Confirm tone and vocabulary are appropriate for the stated audience\n"
-                f"6. Trim or expand to reach approximately {target_words:,} words — "
-                "do not reduce substantially below this target\n"
+                f"6. Edit to reach a minimum of {target_words:,} words — "
+                "this is a hard floor. Do not reduce below it. Expand thin sections if needed.\n"
                 "7. Soften any claim that uses language stronger than the evidence supports — "
                 "use the Critic's source ratings to identify these\n"
                 "8. Preserve all ## section headings and ### subheadings exactly as written — "
@@ -904,7 +904,7 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
         snippets = []
         for hit in hits:
             title   = hit.get("title", "")
-            content = hit.get("content", "")[:700]
+            content = hit.get("content", "")[:1800]
             url     = hit.get("url", "")
             try:
                 from urllib.parse import urlparse
@@ -924,11 +924,25 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
         {
             "role": "system",
             "content": (
-                "You are a contrarian research writer. Your job is to draft a paper that "
-                "takes an alternative, sceptical, or minority perspective on the evidence. "
-                "Use the same sources as provided, but weight the evidence differently: "
-                "emphasise counterarguments, overlooked data, limitations, and dissenting views. "
-                "Do not fabricate evidence. Draw alternative conclusions from the same facts. "
+                "You are an alternative-perspective research writer. Your job is to draft a "
+                "paper that takes a meaningfully different angle on the same evidence as a "
+                "first draft. Choose the alternative framing that best fits the topic and "
+                "evidence — do not default to contrarianism if it does not serve the material.\n\n"
+                "Good alternative framings to consider (pick the one most useful for this topic):\n"
+                "- Risk-focused: lead with what could go wrong, what is underestimated, what the "
+                "  optimistic view overlooks\n"
+                "- Implementation-focused: lead with execution challenges, real-world barriers, "
+                "  and what it actually takes to make this work in practice\n"
+                "- Long-term vs short-term: challenge the dominant time horizon — if the first "
+                "  draft is short-term, take the long view, and vice versa\n"
+                "- Structural vs behavioural: if the first draft focuses on systems or technology, "
+                "  lead with human factors, culture, and behaviour — or the reverse\n"
+                "- Minority view: where there is genuine expert disagreement, represent the "
+                "  dissenting position with equal rigour\n"
+                "- Counterargument: identify the strongest objections to the mainstream view and "
+                "  build the paper around addressing them seriously\n\n"
+                "Use only the sources provided. Do not fabricate evidence. Draw a different "
+                "interpretation from the same facts — do not invent new ones. "
                 f"{STYLE_RULES}"
             ),
         },
@@ -950,10 +964,11 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
                     if user_feedback else ""
                 ) +
                 "Begin your response with a single line in this exact format:\n"
-                "TITLE: [a short, professional title for this alternative paper — 8 words or fewer]\n\n"
+                "TITLE: [a short, professional title that signals your alternative framing — 8 words or fewer]\n\n"
                 "Then write the complete paper. Follow these rules exactly:\n"
-                "1. ALTERNATIVE PERSPECTIVE — take a contrarian or minority view on the topic. "
-                "Challenge the mainstream interpretation of the evidence.\n"
+                "1. ALTERNATIVE FRAMING — choose the framing from the list above that best serves "
+                "this topic. State your chosen angle in the first paragraph so the reader "
+                "understands immediately how this paper differs from a standard treatment.\n"
                 "2. SAME EVIDENCE — use only the sources provided. Do not invent new facts.\n"
                 "3. SYNTHESISE — organise around key arguments, not question-by-question.\n"
                 "4. STRUCTURE — follow the format instructions above exactly.\n"
@@ -998,8 +1013,8 @@ def run_debate_judge(state: dict, chain) -> dict:
         winner, reasoning, incorporate (list), synthesis, model_used, prompt_sent
     On exception: returns safe default (winner="A").
     """
-    draft_a = state.get("draft", "")[:2000]
-    draft_b = state.get("draft_b", "")[:2000]
+    draft_a = state.get("draft", "")[:7000]
+    draft_b = state.get("draft_b", "")[:7000]
 
     messages = [
         {
@@ -1023,8 +1038,8 @@ def run_debate_judge(state: dict, chain) -> dict:
         {
             "role": "user",
             "content": (
-                f"DRAFT A (first 2,000 chars):\n{draft_a}\n\n"
-                f"DRAFT B (first 2,000 chars):\n{draft_b}\n\n"
+                f"DRAFT A (first 7,000 chars):\n{draft_a}\n\n"
+                f"DRAFT B (first 7,000 chars):\n{draft_b}\n\n"
                 "Which draft is stronger? Follow the response format exactly."
             ),
         },
@@ -1095,7 +1110,7 @@ def run_fact_checker(state: dict, chain) -> dict:
 
     On any exception: returns a clean pass so the pipeline never blocks.
     """
-    draft    = state.get("draft", "")[:4000]
+    draft    = state.get("draft", "")[:9000]
     research = state.get("research", {})
     questions = state.get("questions", [])
 
@@ -1108,7 +1123,7 @@ def run_fact_checker(state: dict, chain) -> dict:
             if total >= 25:
                 break
             title   = hit.get("title", "Untitled")[:60]
-            content = hit.get("content", "")[:250]
+            content = hit.get("content", "")[:600]
             source_lines.append(f"- {title}: {content}")
             total += 1
         if total >= 25:
@@ -1138,7 +1153,7 @@ def run_fact_checker(state: dict, chain) -> dict:
         {
             "role": "user",
             "content": (
-                f"Draft (first 4,000 chars):\n{draft}\n\n"
+                f"Draft (first 9,000 chars):\n{draft}\n\n"
                 f"Source evidence:\n{sources_text}\n\n"
                 "Identify 6-10 specific factual claims and check each one."
             ),
