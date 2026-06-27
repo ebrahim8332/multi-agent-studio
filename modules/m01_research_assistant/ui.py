@@ -1225,10 +1225,16 @@ div[data-baseweb="select"] * { cursor: pointer; }
                     st.rerun()
                 return
 
-            st.warning(
-                f"Fact check: {unsupported_count} claim(s) not supported by source evidence. "
-                "Review before proceeding."
-            )
+            if fc_result.get("error"):
+                st.error(
+                    "⚠️ Fact check failed — the AI could not complete its review. "
+                    "Human review of the draft is required before proceeding."
+                )
+            else:
+                st.warning(
+                    f"Fact check: {unsupported_count} claim(s) not supported by source evidence. "
+                    "Review before proceeding."
+                )
             # Claim table
             claims = fc_result.get("claims", [])
             for claim in claims:
@@ -1251,7 +1257,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
             if not fc_editing:
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    if st.button("Proceed to Judge →", type="primary", key="m01_fc_proceed_btn"):
+                    if st.button("Proceed despite unsupported claims →", type="primary", key="m01_fc_proceed_btn"):
                         st.session_state["m01_phase"] = "judge_running"
                         st.rerun()
                 with col2:

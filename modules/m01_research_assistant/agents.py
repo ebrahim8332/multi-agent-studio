@@ -772,10 +772,10 @@ def run_judge(state: dict, chain) -> dict:
     except Exception:
         pass
 
-    # Fill any missing dimensions with a neutral placeholder
+    # Fill any missing dimensions — mark as failed, not neutral
     for dim in ("completeness", "argument_quality", "source_integration", "format_adherence"):
         if dim not in scores:
-            scores[dim] = {"score": 3, "note": "Could not evaluate."}
+            scores[dim] = {"score": 1, "note": "Could not evaluate — human review required."}
 
     flagged = (
         not rule_check["word_count_ok"]
@@ -1166,10 +1166,11 @@ def run_fact_checker(state: dict, chain) -> dict:
         return {
             "fact_check_result": {
                 "claims":            [],
-                "summary":           "Fact check skipped due to error.",
-                "unsupported_count": 0,
+                "summary":           "Fact check failed — human review required.",
+                "unsupported_count": 1,
                 "weak_count":        0,
-                "flagged":           False,
+                "flagged":           True,
+                "error":             True,
                 "model_used":        "",
                 "prompt_sent":       messages,
             }
