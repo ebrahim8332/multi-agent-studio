@@ -30,6 +30,7 @@ Article enrichment:
 """
 
 import os
+import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Domains excluded from article enrichment — low-quality or non-article content
@@ -38,6 +39,44 @@ _ENRICH_SKIP_DOMAINS = {
     "twitter.com", "x.com", "instagram.com", "tiktok.com",
     "reddit.com", "quora.com", "pinterest.com", "medium.com",
 }
+
+
+# ── URL verification ─────────────────────────────────────────────────────────
+
+def _verify_url(url: str, timeout: int = 5) -> bool:
+    """
+    Returns True if the URL resolves to a readable page (HTTP 200).
+    Returns False for 404, 403, 410, 5xx errors, timeouts, and connection failures.
+    Follows redirects — checks the final destination status code.
+    """
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; research-bot/1.0)"}
+        resp = requests.head(url, allow_redirects=True, timeout=timeout, headers=headers)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _verify_urls_parallel(results: list[dict]) -> list[dict]:
+    """
+    Filters a list of search result dicts, keeping only those whose URLs resolve.
+    Runs HEAD requests in parallel — wall-clock time equals the slowest single check.
+    """
+    if not results:
+        return results
+    with ThreadPoolExecutor(max_workers=min(len(results), 6)) as executor:
+        futures = {executor.submit(_verify_url, r.get("url", "")): r for r in results}
+        verified = []
+        for future in as_completed(futures):
+            result = futures[future]
+            try:
+                if future.result():
+                    verified.append(result)
+            except Exception:
+                pass
+    # Preserve original order
+    url_set = {r.get("url") for r in verified}
+    return [r for r in results if r.get("url") in url_set]
 
 
 # ── Provider functions ────────────────────────────────────────────────────────
@@ -227,6 +266,9 @@ class SearchChain:
                     serper_count = len(serper_hits)
                 except Exception:
                     pass
+
+            # Filter out dead links, paywalled pages, and 404s
+            selected = _verify_urls_parallel(selected)
 
             research[query] = selected
             provider_stats[query] = {

@@ -512,7 +512,12 @@ def run_critic(state: dict, chain) -> dict:
                 "Gap: [one sentence on what is missing or thin, or 'none']\n\n"
                 "End with an Overall Assessment (3-4 sentences) covering: "
                 "breadth of coverage, most significant gaps, and any topic areas the Writer "
-                "should treat cautiously due to weak evidence."
+                "should treat cautiously due to weak evidence.\n\n"
+                "Final line — always include exactly this:\n"
+                "CONFIDENCE: [high / medium / low]\n"
+                "high = sources clearly support the ratings given. "
+                "medium = some borderline calls were made. "
+                "low = ratings are uncertain due to limited or ambiguous sources."
             ),
         },
         {
@@ -532,7 +537,28 @@ def run_critic(state: dict, chain) -> dict:
     ]
 
     response, model = chain.complete(messages, agent_label="Critic")
-    return {"critique": response, "model_used": model, "prompt_sent": messages}
+
+    # Parse confidence line from end of response
+    confidence = "medium"
+    lines = response.strip().split("\n")
+    for line in reversed(lines):
+        line_s = line.strip()
+        if line_s.upper().startswith("CONFIDENCE:"):
+            raw = line_s[11:].strip().lower()
+            if "high" in raw:
+                confidence = "high"
+            elif "low" in raw:
+                confidence = "low"
+            else:
+                confidence = "medium"
+            break
+
+    return {
+        "critique":            response,
+        "critic_confidence":   confidence,
+        "model_used":          model,
+        "prompt_sent":         messages,
+    }
 
 
 # ── Agent 4: Writer ───────────────────────────────────────────────────────────
@@ -729,11 +755,15 @@ def run_judge(state: dict, chain) -> dict:
                 "1 = Poor. Fails the basic requirement of this dimension.\n\n"
                 "Calibration: reserve 4+ for work that is clearly good by the standards of the "
                 "target format. When in doubt between two scores, use the lower one.\n\n"
-                "Respond with exactly four lines — nothing else:\n"
+                "Respond with exactly five lines — nothing else:\n"
                 "COMPLETENESS: [1-5] | [one sentence note]\n"
                 "ARGUMENT_QUALITY: [1-5] | [one sentence note]\n"
                 "SOURCE_INTEGRATION: [1-5] | [one sentence note]\n"
-                "FORMAT_ADHERENCE: [1-5] | [one sentence note]"
+                "FORMAT_ADHERENCE: [1-5] | [one sentence note]\n"
+                "CONFIDENCE: [high / medium / low]\n"
+                "high = scores are clear-cut. "
+                "medium = one or more dimensions were borderline calls. "
+                "low = significant uncertainty in the evaluation."
             ),
         },
         {
@@ -754,8 +784,9 @@ def run_judge(state: dict, chain) -> dict:
         },
     ]
 
-    scores = {}
-    model  = ""
+    scores          = {}
+    model           = ""
+    judge_confidence = "medium"
     try:
         response, model = chain.complete(messages, agent_label="Judge")
         for line in response.strip().split("\n"):
@@ -768,7 +799,20 @@ def run_judge(state: dict, chain) -> dict:
                 key   = m.group(1).lower()
                 score = int(m.group(2))
                 note  = m.group(3).strip()
+                # Out-of-range score treated as failure — same as missing dimension
+                if score < 1 or score > 5:
+                    score = 1
+                if not note:
+                    note = "Could not evaluate — human review required."
                 scores[key] = {"score": score, "note": note}
+            elif line.upper().startswith("CONFIDENCE:"):
+                raw = line[11:].strip().lower()
+                if "high" in raw:
+                    judge_confidence = "high"
+                elif "low" in raw:
+                    judge_confidence = "low"
+                else:
+                    judge_confidence = "medium"
     except Exception:
         pass
 
@@ -787,6 +831,7 @@ def run_judge(state: dict, chain) -> dict:
         "rule_check":  rule_check,
         "scores":      scores,
         "flagged":     flagged,
+        "confidence":  judge_confidence,
         "model_used":  model,
         "prompt_sent": messages,
     }
@@ -1083,6 +1128,19 @@ def run_debate_judge(state: dict, chain) -> dict:
         elif in_incorporate and line_s.startswith("- "):
             incorporate.append(line_s[2:].strip())
 
+    # Validate output — if reasoning is empty the parse failed silently
+    if not reasoning:
+        return {
+            "debate_result": {
+                "winner":      "A",
+                "reasoning":   "",
+                "incorporate": [],
+                "synthesis":   "",
+                "model_used":  model,
+                "prompt_sent": messages,
+            }
+        }
+
     return {
         "debate_result": {
             "winner":      winner,
@@ -1147,7 +1205,13 @@ def run_fact_checker(state: dict, chain) -> dict:
                 "Verdict definitions:\n"
                 "Supported: the claim is directly backed by a source in the list.\n"
                 "Weak: partial support — a source is related but does not confirm the claim directly.\n"
-                "Unsupported: no source in the list supports the claim."
+                "Unsupported: no source in the list supports the claim.\n\n"
+                "After the last claim, add exactly:\n"
+                "SUMMARY: [one-line overall assessment]\n"
+                "CONFIDENCE: [high / medium / low]\n"
+                "high = claims were clearly verifiable against sources. "
+                "medium = some claims were borderline. "
+                "low = sources were thin or claims were difficult to match."
             ),
         },
         {
@@ -1177,9 +1241,10 @@ def run_fact_checker(state: dict, chain) -> dict:
         }
 
     # Parse claims
-    claims     = []
-    current    = {}
-    fc_summary = ""
+    claims        = []
+    current       = {}
+    fc_summary    = ""
+    fc_confidence = "medium"
 
     for line in response.strip().split("\n"):
         line_s = line.strip()
@@ -1201,9 +1266,33 @@ def run_fact_checker(state: dict, chain) -> dict:
                     current["verdict"] = "Weak"
         elif line_s.upper().startswith("SUMMARY:"):
             fc_summary = line_s[8:].strip()
+        elif line_s.upper().startswith("CONFIDENCE:"):
+            raw = line_s[11:].strip().lower()
+            if "high" in raw:
+                fc_confidence = "high"
+            elif "low" in raw:
+                fc_confidence = "low"
+            else:
+                fc_confidence = "medium"
 
     if current and current.get("claim"):
         claims.append(current)
+
+    # Validate output — if the model responded but produced no parseable claims,
+    # treat as a failure rather than a silent clean pass
+    if not claims:
+        return {
+            "fact_check_result": {
+                "claims":            [],
+                "summary":           "Fact check failed — AI response could not be parsed. Human review required.",
+                "unsupported_count": 1,
+                "weak_count":        0,
+                "flagged":           True,
+                "error":             True,
+                "model_used":        model,
+                "prompt_sent":       messages,
+            }
+        }
 
     unsupported_count = sum(1 for c in claims if c.get("verdict") == "Unsupported")
     weak_count        = sum(1 for c in claims if c.get("verdict") == "Weak")
@@ -1215,6 +1304,7 @@ def run_fact_checker(state: dict, chain) -> dict:
             "unsupported_count": unsupported_count,
             "weak_count":        weak_count,
             "flagged":           unsupported_count > 0,
+            "confidence":        fc_confidence,
             "model_used":        model,
             "prompt_sent":       messages,
         }

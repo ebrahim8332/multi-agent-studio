@@ -874,6 +874,10 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 with col_gap:
                     st.caption(gap_text)
 
+            critic_confidence = st.session_state.get("m01_pending_state", {}).get("critic_confidence", "medium")
+            conf_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(critic_confidence, "🟡")
+            st.caption(f"{conf_icon} Critic confidence: **{critic_confidence}** — how certain the AI was in its ratings.")
+
             st.markdown("")
             col1, col2 = st.columns([1, 1])
             with col1:
@@ -1252,25 +1256,45 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 with col_source:
                     st.caption(source)
 
+            if not fc_result.get("error"):
+                fc_confidence = fc_result.get("confidence", "medium")
+                conf_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(fc_confidence, "🟡")
+                st.caption(f"{conf_icon} Fact checker confidence: **{fc_confidence}** — how clearly claims matched source evidence.")
+
             st.markdown("")
 
             if not fc_editing:
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    if st.button("Proceed despite unsupported claims →", type="primary", key="m01_fc_proceed_btn"):
-                        st.session_state["m01_phase"] = "judge_running"
-                        st.rerun()
-                with col2:
-                    redraft_label = "Re-draft with note" if can_redraft else f"Re-draft (max {MAX_WRITER_RETRIES} reached)"
-                    if st.button(redraft_label, disabled=not can_redraft, key="m01_fc_redraft_btn"):
-                        st.session_state["m01_fc_editing"] = True
-                        st.rerun()
-                with col3:
-                    if st.button("Stop here", key="m01_fc_stop_btn"):
-                        for key in _STATE_KEYS:
-                            st.session_state.pop(key, None)
-                        st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
-                        st.rerun()
+                if fc_result.get("error"):
+                    # API failure — no proceed allowed. Re-draft or stop only.
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        redraft_label = "Re-draft with note" if can_redraft else f"Re-draft (max {MAX_WRITER_RETRIES} reached)"
+                        if st.button(redraft_label, disabled=not can_redraft, key="m01_fc_redraft_btn"):
+                            st.session_state["m01_fc_editing"] = True
+                            st.rerun()
+                    with col2:
+                        if st.button("Stop here", key="m01_fc_stop_btn"):
+                            for key in _STATE_KEYS:
+                                st.session_state.pop(key, None)
+                            st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
+                            st.rerun()
+                else:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if st.button("Proceed despite unsupported claims →", type="primary", key="m01_fc_proceed_btn"):
+                            st.session_state["m01_phase"] = "judge_running"
+                            st.rerun()
+                    with col2:
+                        redraft_label = "Re-draft with note" if can_redraft else f"Re-draft (max {MAX_WRITER_RETRIES} reached)"
+                        if st.button(redraft_label, disabled=not can_redraft, key="m01_fc_redraft_btn"):
+                            st.session_state["m01_fc_editing"] = True
+                            st.rerun()
+                    with col3:
+                        if st.button("Stop here", key="m01_fc_stop_btn"):
+                            for key in _STATE_KEYS:
+                                st.session_state.pop(key, None)
+                            st.session_state["m01_form_key"] = st.session_state.get("m01_form_key", 0)
+                            st.rerun()
             else:
                 suggestion = _build_fact_check_feedback(fc_result)
                 if "m01_fc_feedback_input" not in st.session_state:
@@ -1369,6 +1393,25 @@ div[data-baseweb="select"] * { cursor: pointer; }
             _agent_panel(editor_ph, "Agent 8: Editor", "", STATUS_FAILED)
             st.error(f"Judge failed: {e}")
             return
+
+        # Double-run on borderline scores — any dimension scoring exactly 3 is unstable
+        scores_run1 = result.get("scores", {})
+        borderline  = [k for k, v in scores_run1.items() if v.get("score") == 3]
+        score_variance = {}
+        if borderline:
+            try:
+                with st.spinner("Borderline scores detected — running second evaluation to verify..."):
+                    result2 = run_judge(full_state, chain)
+                scores_run2 = result2.get("scores", {})
+                for dim in borderline:
+                    s1 = scores_run1.get(dim, {}).get("score", 3)
+                    s2 = scores_run2.get(dim, {}).get("score", 3)
+                    if abs(s1 - s2) >= 2:
+                        score_variance[dim] = {"run1": s1, "run2": s2}
+            except Exception:
+                pass  # Second run failed — proceed with first result only
+
+        result["score_variance"] = score_variance
 
         judge_out    = _format_judge_output(result)
         judge_model  = result.get("model_used", "")
@@ -1492,6 +1535,22 @@ div[data-baseweb="select"] * { cursor: pointer; }
             # Scorecard
             _show_judge_scorecard(judge_result)
 
+            judge_confidence = judge_result.get("confidence", "medium")
+            conf_icon = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(judge_confidence, "🟡")
+            st.caption(f"{conf_icon} Judge confidence: **{judge_confidence}** — how certain the AI was in its scores.")
+
+            score_variance = judge_result.get("score_variance", {})
+            if score_variance:
+                variance_lines = []
+                for dim, v in score_variance.items():
+                    label = {"completeness": "Completeness", "argument_quality": "Argument quality",
+                             "source_integration": "Source integration", "format_adherence": "Format adherence"}.get(dim, dim)
+                    variance_lines.append(f"{label}: scored {v['run1']}/5 then {v['run2']}/5 on second run")
+                st.warning(
+                    "⚠️ **Unstable scores detected.** The following dimensions scored differently across two evaluations — "
+                    "the AI was not consistent. Human review is especially important here.\n\n"
+                    + "\n\n".join(f"- {line}" for line in variance_lines)
+                )
 
             if not judge_editing:
                 if all_pass:
