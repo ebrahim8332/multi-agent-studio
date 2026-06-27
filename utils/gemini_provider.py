@@ -22,9 +22,9 @@ class GeminiProvider(BaseProvider):
         self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
     def complete(self, messages: list[dict], timeout: int = 60, temperature: float = 0.3,
-                 max_tokens: int | None = None) -> tuple[str, int, int]:
+                 max_tokens: int | None = None, schema: dict | None = None) -> tuple[str, int, int]:
         try:
-            return self._call(messages, timeout, temperature, max_tokens)
+            return self._call(messages, timeout, temperature, max_tokens, schema)
 
         except gemini_errors.ClientError as e:
             if e.code in (401, 403):
@@ -44,7 +44,7 @@ class GeminiProvider(BaseProvider):
             ) from e
 
     def _call(self, messages: list[dict], timeout: int, temperature: float = 0.3,
-              max_tokens: int | None = None) -> tuple[str, int, int]:
+              max_tokens: int | None = None, schema: dict | None = None) -> tuple[str, int, int]:
         system_text = ""
         gemini_contents = []
 
@@ -68,6 +68,8 @@ class GeminiProvider(BaseProvider):
             system_instruction=system_text if system_text else None,
             temperature=temperature,
             max_output_tokens=max_tokens,
+            response_mime_type="application/json" if schema else None,
+            response_schema=schema if schema else None,
         )
 
         response = self.client.models.generate_content(

@@ -7,9 +7,10 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def complete(self, messages: list[dict], timeout: int = 60, temperature: float = 0.3,
-                 max_tokens: int | None = None) -> tuple[str, int, int]:
+                 max_tokens: int | None = None, schema: dict | None = None) -> tuple[str, int, int]:
         """Send messages to the model and return (response_text, input_tokens, output_tokens).
         Raise FallbackTrigger for any error that should cause the chain to try the next model.
+        When schema is provided, the provider should enforce JSON output matching that schema.
         """
         pass
 

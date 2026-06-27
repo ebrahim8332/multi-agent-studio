@@ -9,7 +9,56 @@ LangGraph merges it back into the full state before passing to the next node.
 """
 
 import re
+import json
 from utils.search_client import get_search_chain
+
+# ── JSON schemas for structured agents ───────────────────────────────────────
+# Passed to chain.complete(schema=...) so Gemini enforces the output at the API
+# level. Groq gets JSON mode (valid JSON guaranteed; key names not enforced).
+
+JUDGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "completeness":       {"type": "object", "properties": {"score": {"type": "integer"}, "note": {"type": "string"}}, "required": ["score", "note"]},
+        "argument_quality":   {"type": "object", "properties": {"score": {"type": "integer"}, "note": {"type": "string"}}, "required": ["score", "note"]},
+        "source_integration": {"type": "object", "properties": {"score": {"type": "integer"}, "note": {"type": "string"}}, "required": ["score", "note"]},
+        "format_adherence":   {"type": "object", "properties": {"score": {"type": "integer"}, "note": {"type": "string"}}, "required": ["score", "note"]},
+        "confidence":         {"type": "string", "enum": ["high", "medium", "low"]},
+    },
+    "required": ["completeness", "argument_quality", "source_integration", "format_adherence", "confidence"],
+}
+
+FACT_CHECKER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim":   {"type": "string"},
+                    "source":  {"type": "string"},
+                    "verdict": {"type": "string", "enum": ["Supported", "Weak", "Unsupported"]},
+                },
+                "required": ["claim", "source", "verdict"],
+            },
+        },
+        "summary":    {"type": "string"},
+        "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+    },
+    "required": ["claims", "summary", "confidence"],
+}
+
+DEBATE_JUDGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "winner":      {"type": "string", "enum": ["A", "B"]},
+        "reasoning":   {"type": "string"},
+        "incorporate": {"type": "array", "items": {"type": "string"}},
+        "synthesis":   {"type": "string"},
+    },
+    "required": ["winner", "reasoning", "incorporate", "synthesis"],
+}
 
 # Word count targets for Judge rule check: {length_string: (target_words, min_acceptable)}
 LENGTH_WORD_TARGETS = {
@@ -755,12 +804,12 @@ def run_judge(state: dict, chain) -> dict:
                 "1 = Poor. Fails the basic requirement of this dimension.\n\n"
                 "Calibration: reserve 4+ for work that is clearly good by the standards of the "
                 "target format. When in doubt between two scores, use the lower one.\n\n"
-                "Respond with exactly five lines — nothing else:\n"
-                "COMPLETENESS: [1-5] | [one sentence note]\n"
-                "ARGUMENT_QUALITY: [1-5] | [one sentence note]\n"
-                "SOURCE_INTEGRATION: [1-5] | [one sentence note]\n"
-                "FORMAT_ADHERENCE: [1-5] | [one sentence note]\n"
-                "CONFIDENCE: [high / medium / low]\n"
+                "Return a JSON object with exactly these fields:\n"
+                "completeness: {score: integer 1-5, note: one sentence}\n"
+                "argument_quality: {score: integer 1-5, note: one sentence}\n"
+                "source_integration: {score: integer 1-5, note: one sentence}\n"
+                "format_adherence: {score: integer 1-5, note: one sentence}\n"
+                "confidence: 'high', 'medium', or 'low'\n"
                 "high = scores are clear-cut. "
                 "medium = one or more dimensions were borderline calls. "
                 "low = significant uncertainty in the evaluation."
@@ -784,35 +833,24 @@ def run_judge(state: dict, chain) -> dict:
         },
     ]
 
-    scores          = {}
-    model           = ""
+    scores           = {}
+    model            = ""
     judge_confidence = "medium"
     try:
-        response, model = chain.complete(messages, agent_label="Judge")
-        for line in response.strip().split("\n"):
-            line = line.strip()
-            m = re.match(
-                r"(COMPLETENESS|ARGUMENT_QUALITY|SOURCE_INTEGRATION|FORMAT_ADHERENCE)"
-                r":\s*([1-5])\s*\|(.+)", line, re.IGNORECASE,
-            )
-            if m:
-                key   = m.group(1).lower()
-                score = int(m.group(2))
-                note  = m.group(3).strip()
-                # Out-of-range score treated as failure — same as missing dimension
-                if score < 1 or score > 5:
-                    score = 1
-                if not note:
-                    note = "Could not evaluate — human review required."
-                scores[key] = {"score": score, "note": note}
-            elif line.upper().startswith("CONFIDENCE:"):
-                raw = line[11:].strip().lower()
-                if "high" in raw:
-                    judge_confidence = "high"
-                elif "low" in raw:
-                    judge_confidence = "low"
-                else:
-                    judge_confidence = "medium"
+        response, model = chain.complete(messages, agent_label="Judge", schema=JUDGE_SCHEMA)
+        data = json.loads(response)
+        for dim in ("completeness", "argument_quality", "source_integration", "format_adherence"):
+            raw = data.get(dim, {})
+            score = int(raw.get("score", 1))
+            note  = raw.get("note", "").strip()
+            if score < 1 or score > 5:
+                score = 1
+            if not note:
+                note = "Could not evaluate — human review required."
+            scores[dim] = {"score": score, "note": note}
+        raw_conf = data.get("confidence", "medium").lower()
+        if raw_conf in ("high", "medium", "low"):
+            judge_confidence = raw_conf
     except Exception:
         pass
 
@@ -1071,13 +1109,11 @@ def run_debate_judge(state: dict, chain) -> dict:
                 "You are NOT judging which view is correct — only which draft is better written "
                 "and better argued. After picking a winner, identify 2-3 arguments or points "
                 "from the losing draft that are worth incorporating into the winning draft.\n\n"
-                "Respond in exactly this format — nothing else:\n"
-                "WINNER: [A or B]\n"
-                "REASONING: [2-3 sentences explaining your choice]\n"
-                "INCORPORATE:\n"
-                "- [point 1 from losing draft worth adding]\n"
-                "- [point 2 from losing draft worth adding]\n"
-                "SYNTHESIS: [one sentence describing what a combined draft would achieve]"
+                "Return a JSON object with exactly these fields:\n"
+                "winner: 'A' or 'B'\n"
+                "reasoning: 2-3 sentences explaining your choice\n"
+                "incorporate: array of 2-3 strings, each a point from the losing draft worth adding\n"
+                "synthesis: one sentence describing what a combined draft would achieve"
             ),
         },
         {
@@ -1090,45 +1126,24 @@ def run_debate_judge(state: dict, chain) -> dict:
         },
     ]
 
-    try:
-        response, model = chain.complete(messages, agent_label="Debate Judge")
-    except Exception:
-        return {
-            "debate_result": {
-                "winner":          "A",
-                "reasoning":       "",
-                "incorporate":     [],
-                "synthesis":       "",
-                "model_used":      "",
-                "prompt_sent":     messages,
-            }
-        }
-
-    # Parse the response
     winner      = "A"
     reasoning   = ""
     incorporate = []
     synthesis   = ""
+    model       = ""
 
-    in_incorporate = False
-    for line in response.strip().split("\n"):
-        line_s = line.strip()
-        if line_s.upper().startswith("WINNER:"):
-            raw = line_s[7:].strip().upper()
-            winner = "B" if raw.startswith("B") else "A"
-            in_incorporate = False
-        elif line_s.upper().startswith("REASONING:"):
-            reasoning = line_s[10:].strip()
-            in_incorporate = False
-        elif line_s.upper().startswith("INCORPORATE:"):
-            in_incorporate = True
-        elif line_s.upper().startswith("SYNTHESIS:"):
-            synthesis = line_s[10:].strip()
-            in_incorporate = False
-        elif in_incorporate and line_s.startswith("- "):
-            incorporate.append(line_s[2:].strip())
+    try:
+        response, model = chain.complete(messages, agent_label="Debate Judge", schema=DEBATE_JUDGE_SCHEMA)
+        data        = json.loads(response)
+        raw_winner  = str(data.get("winner", "A")).strip().upper()
+        winner      = "B" if raw_winner.startswith("B") else "A"
+        reasoning   = data.get("reasoning", "").strip()
+        incorporate = [str(p) for p in data.get("incorporate", []) if p]
+        synthesis   = data.get("synthesis", "").strip()
+    except Exception:
+        pass
 
-    # Validate output — if reasoning is empty the parse failed silently
+    # Validate — if reasoning is empty the response was unusable
     if not reasoning:
         return {
             "debate_result": {
@@ -1196,19 +1211,17 @@ def run_fact_checker(state: dict, chain) -> dict:
                 "You are a fact-checker. You will receive a draft paper and a set of source "
                 "summaries. Identify 6-10 specific factual claims in the draft and check each "
                 "one against the sources provided.\n\n"
-                "Use exactly this format — nothing else:\n"
-                "CLAIM: [the factual claim as stated in the draft]\n"
-                "SOURCE: [title of supporting source, or 'none found']\n"
-                "VERDICT: [Supported / Weak / Unsupported]\n"
-                "...repeat for each claim...\n"
-                "SUMMARY: [one-line overall assessment]\n\n"
                 "Verdict definitions:\n"
                 "Supported: the claim is directly backed by a source in the list.\n"
                 "Weak: partial support — a source is related but does not confirm the claim directly.\n"
                 "Unsupported: no source in the list supports the claim.\n\n"
-                "After the last claim, add exactly:\n"
-                "SUMMARY: [one-line overall assessment]\n"
-                "CONFIDENCE: [high / medium / low]\n"
+                "Return a JSON object with exactly these fields:\n"
+                "claims: array of objects, each with:\n"
+                "  claim: the factual claim as stated in the draft\n"
+                "  source: title of supporting source, or 'none found'\n"
+                "  verdict: exactly 'Supported', 'Weak', or 'Unsupported'\n"
+                "summary: one-line overall assessment\n"
+                "confidence: 'high', 'medium', or 'low'\n"
                 "high = claims were clearly verifiable against sources. "
                 "medium = some claims were borderline. "
                 "low = sources were thin or claims were difficult to match."
@@ -1224,8 +1237,29 @@ def run_fact_checker(state: dict, chain) -> dict:
         },
     ]
 
+    claims        = []
+    fc_summary    = ""
+    fc_confidence = "medium"
+    model         = ""
+
     try:
-        response, model = chain.complete(messages, agent_label="Fact Checker")
+        response, model = chain.complete(messages, agent_label="Fact Checker", schema=FACT_CHECKER_SCHEMA)
+        data = json.loads(response)
+
+        for item in data.get("claims", []):
+            raw_verdict = item.get("verdict", "Weak")
+            if raw_verdict not in ("Supported", "Weak", "Unsupported"):
+                raw_verdict = "Weak"
+            claims.append({
+                "claim":   str(item.get("claim", "")).strip(),
+                "source":  str(item.get("source", "none found")).strip(),
+                "verdict": raw_verdict,
+            })
+
+        fc_summary    = data.get("summary", "").strip()
+        raw_conf      = data.get("confidence", "medium").lower()
+        fc_confidence = raw_conf if raw_conf in ("high", "medium", "low") else "medium"
+
     except Exception:
         return {
             "fact_check_result": {
@@ -1235,56 +1269,17 @@ def run_fact_checker(state: dict, chain) -> dict:
                 "weak_count":        0,
                 "flagged":           True,
                 "error":             True,
-                "model_used":        "",
+                "model_used":        model,
                 "prompt_sent":       messages,
             }
         }
 
-    # Parse claims
-    claims        = []
-    current       = {}
-    fc_summary    = ""
-    fc_confidence = "medium"
-
-    for line in response.strip().split("\n"):
-        line_s = line.strip()
-        if line_s.upper().startswith("CLAIM:"):
-            if current:
-                claims.append(current)
-            current = {"claim": line_s[6:].strip(), "source": "", "verdict": "Weak"}
-        elif line_s.upper().startswith("SOURCE:"):
-            if current is not None:
-                current["source"] = line_s[7:].strip()
-        elif line_s.upper().startswith("VERDICT:"):
-            if current is not None:
-                raw_verdict = line_s[8:].strip()
-                if "unsupported" in raw_verdict.lower():
-                    current["verdict"] = "Unsupported"
-                elif "supported" in raw_verdict.lower():
-                    current["verdict"] = "Supported"
-                else:
-                    current["verdict"] = "Weak"
-        elif line_s.upper().startswith("SUMMARY:"):
-            fc_summary = line_s[8:].strip()
-        elif line_s.upper().startswith("CONFIDENCE:"):
-            raw = line_s[11:].strip().lower()
-            if "high" in raw:
-                fc_confidence = "high"
-            elif "low" in raw:
-                fc_confidence = "low"
-            else:
-                fc_confidence = "medium"
-
-    if current and current.get("claim"):
-        claims.append(current)
-
-    # Validate output — if the model responded but produced no parseable claims,
-    # treat as a failure rather than a silent clean pass
+    # If the model responded but returned no claims, treat as a failure
     if not claims:
         return {
             "fact_check_result": {
                 "claims":            [],
-                "summary":           "Fact check failed — AI response could not be parsed. Human review required.",
+                "summary":           "Fact check failed — AI response contained no claims. Human review required.",
                 "unsupported_count": 1,
                 "weak_count":        0,
                 "flagged":           True,

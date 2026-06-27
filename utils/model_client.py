@@ -125,16 +125,18 @@ class FallbackChain:
 
     def complete(self, messages: list[dict], timeout: int = 90,
                  max_tokens: int | None = None,
-                 agent_label: str = "") -> tuple[str, str]:
+                 agent_label: str = "",
+                 schema: dict | None = None) -> tuple[str, str]:
         """Returns (response_text, model_name) from the first provider that succeeds.
-        Also accumulates token counts into session_state for the run summary."""
+        Also accumulates token counts into session_state for the run summary.
+        When schema is provided, Gemini enforces it at the API level; Groq uses JSON mode."""
         start = self.session_state.get(SESSION_LOCK_KEY, 0)
         errors = []
         for i in range(start, len(self.providers)):
             provider = self.providers[i]
             try:
                 text, input_tok, output_tok = provider.complete(
-                    messages, timeout=timeout, max_tokens=max_tokens
+                    messages, timeout=timeout, max_tokens=max_tokens, schema=schema
                 )
                 self.session_state[SESSION_LOCK_KEY] = i
                 self.session_state["locked_model_name"] = provider.model_name

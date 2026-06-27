@@ -26,9 +26,9 @@ class GroqProvider(BaseProvider):
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
     def complete(self, messages: list[dict], timeout: int = 60, temperature: float = 0.3,
-                 max_tokens: int | None = None) -> tuple[str, int, int]:
+                 max_tokens: int | None = None, schema: dict | None = None) -> tuple[str, int, int]:
         try:
-            return self._call(messages, timeout, temperature, max_tokens)
+            return self._call(messages, timeout, temperature, max_tokens, schema)
 
         except groq_errors.RateLimitError as e:
             raise FallbackTrigger(f"Groq rate limit on {self.model_name}") from e
@@ -53,7 +53,7 @@ class GroqProvider(BaseProvider):
                 ) from retry_error
 
     def _call(self, messages: list[dict], timeout: int, temperature: float = 0.3,
-              max_tokens: int | None = None) -> tuple[str, int, int]:
+              max_tokens: int | None = None, schema: dict | None = None) -> tuple[str, int, int]:
         if max_tokens is None:
             max_tokens = int(os.getenv("GROQ_MAX_COMPLETION_TOKENS", "4000"))
 
@@ -64,6 +64,11 @@ class GroqProvider(BaseProvider):
             temperature=temperature,
             timeout=timeout,
         )
+        # Groq supports JSON mode but not full schema enforcement.
+        # When a schema is requested, enable JSON mode — valid JSON is guaranteed,
+        # but key names are not enforced at the API level (our parser handles that).
+        if schema:
+            kwargs["response_format"] = {"type": "json_object"}
         response = self.client.chat.completions.create(**kwargs)
 
         # Extract token counts from usage
