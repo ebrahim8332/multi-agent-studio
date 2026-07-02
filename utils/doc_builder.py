@@ -411,8 +411,10 @@ def build_stock_research_doc(state: dict) -> bytes:
     catalysts = db.get("catalyst_items", [])
     if catalysts:
         for item in catalysts:
+            # No token-cost reason to truncate here — this is the downloaded
+            # document itself, not an LLM prompt. Show the full snippet.
             para = doc.add_paragraph(style="List Bullet")
-            para.add_run(f"{item.get('title', '')}: {item.get('content', '')[:200]}")
+            para.add_run(f"{item.get('title', '')}: {item.get('content', '')}")
     else:
         doc.add_paragraph("No upcoming catalysts identified.")
 

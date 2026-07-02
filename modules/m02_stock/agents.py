@@ -83,6 +83,26 @@ TREND_YEARS = 5
 MAX_EARNINGS_QUARTERS = 8
 MAX_PEERS = 3
 
+# max_tokens on every chain.complete() call below is chosen against two
+# constraints measured directly against the live APIs, not guessed:
+#   1. Realistic content size. Each analyst's output (headed sections or a
+#      bounded Bull/Bear format) runs roughly 900-2500 tokens in practice.
+#      These ceilings give 2-4x headroom above that so depth instructions in
+#      the prompts aren't quietly cut off mid-sentence.
+#   2. Groq's free-tier per-model tokens-per-minute limit. Tested directly:
+#      qwen/qwen3-32b (the tightest model in the chain) starts returning
+#      HTTP 413 "Request too large... TPM" around 6000-7000 tokens
+#      (input + max_tokens combined) — and that budget is shared across
+#      whatever else lands on the same model in the same minute, which
+#      matters here because 3 agents (or 2) can all fall through to Groq
+#      at once in this module's fan-out pattern. 4000 stayed clean across
+#      all 5 Groq tiers in that test; going materially higher risks a
+#      fallback that itself immediately errors instead of just running
+#      short. The Synthesizer gets more headroom (6000) than the free-text
+#      analysts because its output is schema-enforced JSON — truncation
+#      there doesn't just cut a sentence short, it breaks json.loads()
+#      entirely and the whole call is wasted.
+
 # Writing rules injected into every prompt that produces reader-facing text.
 STYLE_RULES = """
 Writing rules — follow exactly:
@@ -670,7 +690,7 @@ def run_fundamentals_analyst(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, timeout=120, max_tokens=3000, agent_label="Fundamentals Analyst")
+    response, model = chain.complete(messages, timeout=120, max_tokens=4000, agent_label="Fundamentals Analyst")
     return {"fundamentals_analysis": response, "model_used": model, "prompt_sent": messages}
 
 
@@ -741,7 +761,7 @@ def run_quality_analyst(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, timeout=100, max_tokens=2500, agent_label="Business Quality Analyst")
+    response, model = chain.complete(messages, timeout=120, max_tokens=4000, agent_label="Business Quality Analyst")
     return {"quality_analysis": response, "model_used": model, "prompt_sent": messages}
 
 
@@ -808,7 +828,7 @@ def run_risk_analyst(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, timeout=120, max_tokens=3000, agent_label="Risk Analyst")
+    response, model = chain.complete(messages, timeout=120, max_tokens=4000, agent_label="Risk Analyst")
     return {"risk_analysis": response, "model_used": model, "prompt_sent": messages}
 
 
@@ -853,7 +873,7 @@ def run_bull_advocate(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, timeout=90, max_tokens=1500, agent_label="Bull Advocate")
+    response, model = chain.complete(messages, timeout=90, max_tokens=2000, agent_label="Bull Advocate")
     return {"bull_case": response, "model_used": model, "prompt_sent": messages}
 
 
@@ -901,7 +921,7 @@ def run_bear_advocate(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, timeout=90, max_tokens=1500, agent_label="Bear Advocate")
+    response, model = chain.complete(messages, timeout=90, max_tokens=2000, agent_label="Bear Advocate")
     return {"bear_case": response, "model_used": model, "prompt_sent": messages}
 
 
@@ -1026,7 +1046,7 @@ def run_synthesizer(state: dict, chain) -> dict:
     ]
 
     response, model = chain.complete(
-        messages, timeout=120, max_tokens=4000, agent_label="Synthesizer", schema=SYNTHESIZER_SCHEMA
+        messages, timeout=140, max_tokens=6000, agent_label="Synthesizer", schema=SYNTHESIZER_SCHEMA
     )
 
     try:
