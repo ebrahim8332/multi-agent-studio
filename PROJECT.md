@@ -1,6 +1,6 @@
 # PROJECT.md — multi-agent-studio
 
-## Status: Module 1 live. Module 2 (Stock Analyser) built, tested, and pushed to GitHub — Streamlit Cloud redeploying.
+## Status: Module 1 live. Module 2 (Stock Analyser) live — now 9 agents after adding a Fact Checker (Agent 6) following a human-in-the-loop reliability review.
 ## Last updated: 2026-07-02
 
 ---
@@ -82,6 +82,15 @@
 ---
 
 ## Session Notes
+
+### Session 9 — 2026-07-02 (Module 2 built, tested, and hardened same day)
+
+Built Module 2 (Stock Analyser) end to end: 8 agents per spec, tested live against real tickers in Chrome. Then, prompted by Alnoor's own questions (echoing Module 1's history of silent failures and thin token budgets), ran three follow-up hardening passes in the same session:
+1. Boxed the fan-out agent panels (matching M01's Tavily/Exa treatment), fixed a real Exa API bug (`search_and_contents`/`use_autoprompt` both removed from the installed exa-py version — had been silently returning zero results on every run), corrected token ceilings after testing Groq's actual per-model rate limits directly.
+2. Holistic quality audit: surfaced Synthesizer JSON-parse failures as real failures instead of fake-looking successes, added an objective word-count check to flag thin agent output, strengthened depth instructions from soft "2-3 sentences" to hard word floors (roughly doubled real output depth, measured before/after), closed two data-utilization gaps (52-week range, dividend yield never reaching any prompt; data-quality score breakdown never reaching the Synthesizer).
+3. Added **Agent 6: Fact Checker** after a direct human-in-the-loop reliability assessment — verifies Fundamentals/Risk numeric claims against `data_bundle` in Python, not another model's opinion. Found two real bugs by testing against live data: yfinance's `debtToEquity` field uses inconsistent internal scaling vs. the balance-sheet-computed ratio (the app was showing two different numbers for the same metric), and the extractor was flagging legitimate historical trend citations as false mismatches. Verified live: a real TSLA run caught a stale price citation, halted for a human decision, and correctly forced confidence to Low after override.
+
+Full detail in the memory file (`project_multi_agent_studio.md`) and this project's `CLAUDE.md` Module 2 section.
 
 ### Session 8 — 2026-06-25 (parallel search, bug fixes, quality improvements, learning capture)
 
