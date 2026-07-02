@@ -88,7 +88,8 @@ _FAN_OUT_AGENT_LABELS = (
 
 def _agent_panel(placeholder, label: str, description: str, status: str,
                   output: str = "", model: str = "", expanded: bool = False,
-                  running: bool = False, prompt: list = None, bordered: bool = None) -> None:
+                  running: bool = False, prompt: list = None, bordered: bool = None,
+                  thin_warning: str = "") -> None:
     """Renders a single agent panel into a placeholder. Same conventions as
     Module 1's _agent_panel(): status line, running caption with the locked
     model name, collapsible output, collapsible prompt viewer.
@@ -98,7 +99,13 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
     Module 1 uses for the Tavily/Exa panels and Writer A/B. Auto-detected
     from the label for the five agents that run as part of a fan-out
     (Fundamentals, Business Quality, and Risk Analysts; Bull and Bear
-    Advocates), so every call site gets it without passing the flag."""
+    Advocates), so every call site gets it without passing the flag.
+
+    thin_warning: when set, shows a caption warning that the output came in
+    under the expected word floor — an objective Python word count, not the
+    model's own judgment (same lesson Module 1 learned: LLMs can't reliably
+    self-assess length). A short-but-complete run should look different from
+    a properly substantive one, not both show the same green checkmark."""
     if bordered is None:
         bordered = any(keyword in label for keyword in _FAN_OUT_AGENT_LABELS)
     with placeholder.container():
@@ -114,6 +121,8 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
                 if running:
                     locked_model = st.session_state.get("locked_model_name", "")
                     st.caption(f"⏳ Working... · {locked_model}" if locked_model else "⏳ Working...")
+                if thin_warning:
+                    st.caption(f"⚠️ {thin_warning}")
         else:
             col1, col2 = st.columns([3, 1])
             with col1:
@@ -123,6 +132,8 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
             if running:
                 locked_model = st.session_state.get("locked_model_name", "")
                 st.caption(f"⏳ Working... · {locked_model}" if locked_model else "⏳ Working...")
+            if thin_warning:
+                st.caption(f"⚠️ {thin_warning}")
         if output:
             with st.expander("View output", expanded=expanded):
                 st.markdown(output)
@@ -547,6 +558,11 @@ def render() -> None:
             st.info(data_summary)
             if db.get("thin_analyst_coverage"):
                 st.caption(f"⚠️ Thin analyst coverage: only {db.get('analyst_count')} analyst(s).")
+            breakdown = db.get("data_quality_breakdown", [])
+            if breakdown:
+                with st.expander("Why isn't the data quality score 100?", expanded=False):
+                    for note in breakdown:
+                        st.caption(f"• {note.capitalize()}")
             col1, col2 = st.columns([1, 1])
             with col1:
                 if st.button("Continue to Analysis →", type="primary", key="m02_continue_btn"):
@@ -602,9 +618,9 @@ def render() -> None:
         pipeline_state["fundamentals_analysis"] = results[0]["fundamentals_analysis"]
         pipeline_state["quality_analysis"] = results[1]["quality_analysis"]
         pipeline_state["risk_analysis"] = results[2]["risk_analysis"]
-        agent_outputs["fundamentals"] = {"output": results[0]["fundamentals_analysis"], "model": results[0]["model_used"], "prompt": results[0]["prompt_sent"]}
-        agent_outputs["quality"]      = {"output": results[1]["quality_analysis"],      "model": results[1]["model_used"], "prompt": results[1]["prompt_sent"]}
-        agent_outputs["risk"]         = {"output": results[2]["risk_analysis"],         "model": results[2]["model_used"], "prompt": results[2]["prompt_sent"]}
+        agent_outputs["fundamentals"] = {"output": results[0]["fundamentals_analysis"], "model": results[0]["model_used"], "prompt": results[0]["prompt_sent"], "thin_output": results[0].get("thin_output"), "word_count": results[0].get("word_count")}
+        agent_outputs["quality"]      = {"output": results[1]["quality_analysis"],      "model": results[1]["model_used"], "prompt": results[1]["prompt_sent"], "thin_output": results[1].get("thin_output"), "word_count": results[1].get("word_count")}
+        agent_outputs["risk"]         = {"output": results[2]["risk_analysis"],         "model": results[2]["model_used"], "prompt": results[2]["prompt_sent"], "thin_output": results[2].get("thin_output"), "word_count": results[2].get("word_count")}
 
         st.session_state["m02_pipeline_state"] = pipeline_state
         st.session_state["m02_agent_outputs"] = agent_outputs
@@ -619,8 +635,12 @@ def render() -> None:
         ("risk",         risk_ph,         ("Agent 5: Risk Analyst", "Five risk categories from tiered news and macro context")),
     ):
         out = agent_outputs.get(key, {})
+        thin_warning = (
+            f"Output ran short: {out.get('word_count')} words, under the expected floor for this format."
+            if out.get("thin_output") else ""
+        )
         _agent_panel(placeholder, label, desc, STATUS_COMPLETE, output=out.get("output", ""),
-                     model=out.get("model", ""), prompt=out.get("prompt", []))
+                     model=out.get("model", ""), prompt=out.get("prompt", []), thin_warning=thin_warning)
 
     # ══════════════════════════════════════════════════════════════════════════
     # PHASE: advocates_running  (fan-out / merge, 2 workers)
@@ -645,8 +665,8 @@ def render() -> None:
 
         pipeline_state["bull_case"] = results[0]["bull_case"]
         pipeline_state["bear_case"] = results[1]["bear_case"]
-        agent_outputs["bull"] = {"output": results[0]["bull_case"], "model": results[0]["model_used"], "prompt": results[0]["prompt_sent"]}
-        agent_outputs["bear"] = {"output": results[1]["bear_case"], "model": results[1]["model_used"], "prompt": results[1]["prompt_sent"]}
+        agent_outputs["bull"] = {"output": results[0]["bull_case"], "model": results[0]["model_used"], "prompt": results[0]["prompt_sent"], "thin_output": results[0].get("thin_output"), "word_count": results[0].get("word_count")}
+        agent_outputs["bear"] = {"output": results[1]["bear_case"], "model": results[1]["model_used"], "prompt": results[1]["prompt_sent"], "thin_output": results[1].get("thin_output"), "word_count": results[1].get("word_count")}
 
         st.session_state["m02_pipeline_state"] = pipeline_state
         st.session_state["m02_agent_outputs"] = agent_outputs
@@ -660,8 +680,12 @@ def render() -> None:
         ("bear", bear_ph, ("Agent 7: Bear Advocate", "Strongest case against owning it")),
     ):
         out = agent_outputs.get(key, {})
+        thin_warning = (
+            f"Output ran short: {out.get('word_count')} words, under the expected floor for this format."
+            if out.get("thin_output") else ""
+        )
         _agent_panel(placeholder, label, desc, STATUS_COMPLETE, output=out.get("output", ""),
-                     model=out.get("model", ""), prompt=out.get("prompt", []))
+                     model=out.get("model", ""), prompt=out.get("prompt", []), thin_warning=thin_warning)
 
     # ══════════════════════════════════════════════════════════════════════════
     # PHASE: synthesizing
@@ -677,6 +701,19 @@ def render() -> None:
         except Exception as e:
             st.error(f"Synthesizer failed: {e}")
             _agent_panel(synth_ph, "Agent 8: Synthesizer", "", STATUS_FAILED)
+            return
+
+        if result.get("parse_error"):
+            # The model's response was not valid JSON at all — a real
+            # failure, not a legitimate Hold/Low result. Show it as failed
+            # rather than letting it through looking like a normal answer.
+            st.error(
+                "Synthesizer response could not be parsed into a valid result. "
+                "This is a model/formatting failure, not a genuine low-confidence "
+                "rating. Try Start Over — a retry often succeeds."
+            )
+            _agent_panel(synth_ph, "Agent 8: Synthesizer", "Response failed to parse", STATUS_FAILED,
+                         prompt=result.get("prompt_sent", []))
             return
 
         pipeline_state.update(result)

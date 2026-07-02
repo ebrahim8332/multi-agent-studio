@@ -350,34 +350,56 @@ def _fetch_analyst_distribution(t: "yf.Ticker") -> dict | None:
 
 def _compute_data_quality_score(fields_found: int, fields_required: int, analyst_count: int,
                                  filing_age_days: int | None, news_count_30d: int,
-                                 peer_count: int) -> tuple[int, str]:
+                                 peer_count: int) -> tuple[int, str, list[str]]:
     """
     0-100 score per the Data Quality Score table in the spec:
     required fields (40) + analyst coverage (20) + filing age (20)
     + news freshness (10) + peer availability (10).
+
+    Also returns a `breakdown` list of plain-English notes on which
+    specific components fell short of full marks. Without this, the
+    Synthesizer only ever sees the final number — it can say "data
+    quality is low" but never say *why*. The breakdown lets its
+    confidence_explanation cite the actual driver (e.g. "only 2 analysts
+    cover this stock") instead of a generic restatement of the score.
     """
     score = 40 * (fields_found / fields_required) if fields_required else 0
+    breakdown = []
 
     if analyst_count >= 10:
         score += 20
     elif analyst_count >= 3:
         score += 10
+        breakdown.append(f"analyst coverage is moderate ({analyst_count} analysts, not yet 10+)")
+    else:
+        breakdown.append(f"analyst coverage is thin ({analyst_count} analyst(s), fewer than 3)")
 
     if filing_age_days is not None:
         if filing_age_days < 90:
             score += 20
         elif filing_age_days <= 180:
             score += 10
+            breakdown.append(f"most recent earnings report is {filing_age_days} days old (90-180 day range)")
+        else:
+            breakdown.append(f"most recent earnings report is {filing_age_days} days old (over 180 days)")
+    else:
+        breakdown.append("no earnings report date available to assess data freshness")
 
     if news_count_30d >= 5:
         score += 10
     elif news_count_30d >= 1:
         score += 5
+        breakdown.append(f"only {news_count_30d} recent news article(s) found (fewer than 5)")
+    else:
+        breakdown.append("no recent news articles found in the last 30 days")
 
     if peer_count >= 2:
         score += 10
     elif peer_count == 1:
         score += 5
+        breakdown.append("only 1 peer found for comparison (fewer than 2)")
+    else:
+        breakdown.append("no peer data available for comparison")
 
     score = round(score)
     if score >= 80:
@@ -386,7 +408,7 @@ def _compute_data_quality_score(fields_found: int, fields_required: int, analyst
         label = "Adequate"
     else:
         label = "Thin"
-    return score, label
+    return score, label, breakdown
 
 
 def run_data_agent(ticker: str, company_name: str) -> dict:
@@ -519,7 +541,7 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
         if macro_hits:
             macro_context = macro_hits[0].get("content", "")[:500]
 
-    data_quality_score, data_quality_label = _compute_data_quality_score(
+    data_quality_score, data_quality_label, data_quality_breakdown = _compute_data_quality_score(
         fields_found=fields_found,
         fields_required=len(required_checks),
         analyst_count=analyst_count,
@@ -564,6 +586,7 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
         "macro_context": macro_context,
         "data_quality_score": data_quality_score,
         "data_quality_label": data_quality_label,
+        "data_quality_breakdown": data_quality_breakdown,
     }
 
 
@@ -626,6 +649,19 @@ def _format_catalyst_items(catalyst_items: list[dict]) -> str:
     return "\n".join(f"- {item.get('title', '')}: {item.get('content', '')[:400]}" for item in catalyst_items)
 
 
+def _word_count_check(text: str, min_words: int) -> tuple[int, bool]:
+    """
+    Objective word count, not a model's self-report — same lesson Module 1
+    learned: LLMs cannot reliably judge their own output length, so Python
+    counts instead of trusting the model. Returns (word_count, thin) where
+    thin=True means the output fell below the expected floor for its
+    format and should be flagged in the UI rather than silently accepted
+    as a complete, full-quality analysis.
+    """
+    count = len(text.split())
+    return count, count < min_words
+
+
 # ── Agent 3: Fundamentals Analyst ─────────────────────────────────────────────
 
 def run_fundamentals_analyst(state: dict, chain) -> dict:
@@ -639,6 +675,7 @@ def run_fundamentals_analyst(state: dict, chain) -> dict:
     supp = db.get("supplementary", {})
     eps_trailing = supp.get("eps_trailing")
     price_to_book = supp.get("price_to_book")
+    dividend_yield = supp.get("dividend_yield")
 
     messages = [
         {
@@ -654,15 +691,22 @@ def run_fundamentals_analyst(state: dict, chain) -> dict:
                 "State when a metric is above, at, or below sector peers — do not just "
                 "report the number. Flag any metric that is deteriorating. Where trailing "
                 "EPS or price-to-book is provided, use it to sharpen the Valuation vs Peers "
-                "section, not just P/E.\n\n"
+                "section, not just P/E. Where the current price sits close to the 52-week "
+                "high or low, say so explicitly and what it implies for this time horizon. "
+                "Where a dividend yield is provided, note whether it is meaningful for this "
+                "stock's total-return case or negligible.\n\n"
                 "Time horizon affects framing: short-term weights recent momentum and "
                 "earnings surprises; long-term weights structural margin trends and FCF "
                 "trajectory.\n\n"
                 "Output format: structured findings under exactly five headings: "
                 "Revenue Trend, Profitability Trend, Earnings Quality, Valuation vs Peers, "
-                "Red Flags (write 'None identified' if there are none). Every heading needs "
-                "at least 2-3 substantive sentences grounded in specific numbers from the "
-                "data below — a one-line heading is not acceptable. Plain English. No jargon.\n\n"
+                "Red Flags (write 'None identified' if there are none). "
+                "Length is a hard floor, not a target: each heading needs a minimum of 80 "
+                "words of substantive analysis grounded in specific numbers from the data "
+                "below. Go deeper than the floor whenever the data supports it — do not stop "
+                "at the minimum by default. A one-line heading is a failure, not an answer. "
+                "Before finishing, check every heading against this floor and expand any "
+                "that fall short. Plain English. No jargon.\n\n"
                 f"{STYLE_RULES}"
             ),
         },
@@ -671,9 +715,11 @@ def run_fundamentals_analyst(state: dict, chain) -> dict:
             "content": (
                 f"Company: {db['company_name']} ({db['ticker']}) — {db['sector']} / {db['industry']}\n"
                 f"Time horizon: {time_horizon}\n\n"
+                f"Current price: ${db['current_price']}   |   52-week range: ${db['fifty_two_week_low']} - ${db['fifty_two_week_high']}\n"
                 f"Current P/E ({db['pe_used']}): {db['pe_value']}\n"
                 + (f"Trailing EPS: {eps_trailing:.2f}\n" if eps_trailing is not None else "")
                 + (f"Price-to-book: {price_to_book:.2f}\n" if price_to_book is not None else "")
+                + (f"Dividend yield: {dividend_yield*100:.2f}%\n" if dividend_yield is not None else "Dividend yield: none / not paid\n")
                 + f"Revenue (TTM): ${db['revenue_ttm']:,.0f}\n"
                 f"Revenue growth YoY: {db['revenue_growth']*100:.1f}%\n"
                 f"Gross margin: {db['gross_margin']*100:.1f}%\n"
@@ -691,7 +737,11 @@ def run_fundamentals_analyst(state: dict, chain) -> dict:
     ]
 
     response, model = chain.complete(messages, timeout=120, max_tokens=4000, agent_label="Fundamentals Analyst")
-    return {"fundamentals_analysis": response, "model_used": model, "prompt_sent": messages}
+    word_count, thin_output = _word_count_check(response, min_words=400)
+    return {
+        "fundamentals_analysis": response, "model_used": model, "prompt_sent": messages,
+        "word_count": word_count, "thin_output": thin_output,
+    }
 
 
 # ── Agent 4: Business Quality Analyst ─────────────────────────────────────────
@@ -740,9 +790,13 @@ def run_quality_analyst(state: dict, chain) -> dict:
                 "State this framing explicitly when discussing insider activity.\n\n"
                 "Output format: structured findings under exactly four headings: "
                 "Competitive Moat, Brand and Market Position, Management Signals, "
-                "Long-Term Prospects. Every heading needs at least 2-3 substantive "
-                "sentences grounded in the research provided — a one-line heading is "
-                "not acceptable. Plain English.\n\n"
+                "Long-Term Prospects. "
+                "Length is a hard floor, not a target: each heading needs a minimum of 80 "
+                "words of substantive analysis grounded in the research provided. Go deeper "
+                "than the floor whenever the research supports it — do not stop at the "
+                "minimum by default. A one-line heading is a failure, not an answer. Before "
+                "finishing, check every heading against this floor and expand any that fall "
+                "short. Plain English.\n\n"
                 f"{STYLE_RULES}"
             ),
         },
@@ -762,7 +816,11 @@ def run_quality_analyst(state: dict, chain) -> dict:
     ]
 
     response, model = chain.complete(messages, timeout=120, max_tokens=4000, agent_label="Business Quality Analyst")
-    return {"quality_analysis": response, "model_used": model, "prompt_sent": messages}
+    word_count, thin_output = _word_count_check(response, min_words=320)
+    return {
+        "quality_analysis": response, "model_used": model, "prompt_sent": messages,
+        "word_count": word_count, "thin_output": thin_output,
+    }
 
 
 # ── Agent 5: Risk Analyst ─────────────────────────────────────────────────────
@@ -801,13 +859,18 @@ def run_risk_analyst(state: dict, chain) -> dict:
                 "environment is a tailwind, headwind, or neutral for this sector. Scan "
                 "catalyst items for upcoming events that could affect risk.\n\n"
                 "Output format: one paragraph per risk category, beginning with the "
-                "severity rating in brackets. Example: '[High] Valuation risk: ...'. Each "
-                "paragraph needs at least 2-3 substantive sentences citing specific "
-                "evidence — a one-line paragraph is not acceptable. "
+                "severity rating in brackets. Example: '[High] Valuation risk: ...'. "
+                "Length is a hard floor, not a target: each risk paragraph needs a minimum "
+                "of 70 words citing specific evidence — go deeper than the floor whenever "
+                "the news and data support it. A one-line paragraph is a failure, not an "
+                "answer, even for a category rated Unknown — explain what evidence you "
+                "looked for and did not find. "
                 "Categories, in order: Valuation Risk, Economic Risk, Competition Risk, "
                 "Regulatory Risk, Business Dependency Risk. "
                 "Add a final paragraph titled 'Macro Context' and a final paragraph "
-                "titled 'Upcoming Catalysts' (or state 'No catalysts identified' if none).\n\n"
+                "titled 'Upcoming Catalysts' (or state 'No catalysts identified' if none). "
+                "Before finishing, check every paragraph against the 70-word floor and "
+                "expand any that fall short.\n\n"
                 f"{STYLE_RULES}"
             ),
         },
@@ -829,7 +892,11 @@ def run_risk_analyst(state: dict, chain) -> dict:
     ]
 
     response, model = chain.complete(messages, timeout=120, max_tokens=4000, agent_label="Risk Analyst")
-    return {"risk_analysis": response, "model_used": model, "prompt_sent": messages}
+    word_count, thin_output = _word_count_check(response, min_words=500)
+    return {
+        "risk_analysis": response, "model_used": model, "prompt_sent": messages,
+        "word_count": word_count, "thin_output": thin_output,
+    }
 
 
 # ── Agent 6: Bull Advocate ─────────────────────────────────────────────────────
@@ -853,8 +920,11 @@ def run_bull_advocate(state: dict, chain) -> dict:
                 "acknowledge the most significant risk, but explain why it does not "
                 "undermine the thesis. Do not be generically optimistic — ground every "
                 "positive claim in a specific data point or finding from the analyst outputs.\n\n"
-                "Output format: Investment thesis (3-5 sentences), three strongest "
-                "supporting points (bulleted), one key risk acknowledged and countered.\n\n"
+                "Output format: Investment thesis (3-5 full sentences, not clipped to the "
+                "minimum), three strongest supporting points (bulleted, 1-2 sentences of "
+                "substantiation each, not just a bare claim), one key risk acknowledged and "
+                "countered in 2+ sentences. Minimum 150 words total — this is a floor, not "
+                "a target.\n\n"
                 f"{STYLE_RULES}"
             ),
         },
@@ -874,7 +944,11 @@ def run_bull_advocate(state: dict, chain) -> dict:
     ]
 
     response, model = chain.complete(messages, timeout=90, max_tokens=2000, agent_label="Bull Advocate")
-    return {"bull_case": response, "model_used": model, "prompt_sent": messages}
+    word_count, thin_output = _word_count_check(response, min_words=150)
+    return {
+        "bull_case": response, "model_used": model, "prompt_sent": messages,
+        "word_count": word_count, "thin_output": thin_output,
+    }
 
 
 # ── Agent 7: Bear Advocate ─────────────────────────────────────────────────────
@@ -901,8 +975,11 @@ def run_bear_advocate(state: dict, chain) -> dict:
                 "significant bullish factor, but explain why it does not overcome the "
                 "thesis. Do not be generically pessimistic — a weak bear case is as bad "
                 "as a weak bull case.\n\n"
-                "Output format: Investment thesis (3-5 sentences), three strongest "
-                "opposing points (bulleted), one key strength acknowledged and countered.\n\n"
+                "Output format: Investment thesis (3-5 full sentences, not clipped to the "
+                "minimum), three strongest opposing points (bulleted, 1-2 sentences of "
+                "substantiation each, not just a bare claim), one key strength acknowledged "
+                "and countered in 2+ sentences. Minimum 150 words total — this is a floor, "
+                "not a target.\n\n"
                 f"{STYLE_RULES}"
             ),
         },
@@ -922,7 +999,11 @@ def run_bear_advocate(state: dict, chain) -> dict:
     ]
 
     response, model = chain.complete(messages, timeout=90, max_tokens=2000, agent_label="Bear Advocate")
-    return {"bear_case": response, "model_used": model, "prompt_sent": messages}
+    word_count, thin_output = _word_count_check(response, min_words=150)
+    return {
+        "bear_case": response, "model_used": model, "prompt_sent": messages,
+        "word_count": word_count, "thin_output": thin_output,
+    }
 
 
 # ── Agent 8: Synthesizer ──────────────────────────────────────────────────────
@@ -992,16 +1073,22 @@ def run_synthesizer(state: dict, chain) -> dict:
     time_horizon = state.get("time_horizon", "Medium-term (1-3 years)")
     quality_score = db["data_quality_score"]
     quality_label = db["data_quality_label"]
+    quality_breakdown = db.get("data_quality_breakdown", [])
+    # Give the Synthesizer the specific drivers, not just the final number —
+    # otherwise confidence_explanation can only ever restate the score
+    # generically ("data quality is low") instead of citing why.
+    breakdown_text = ("; ".join(quality_breakdown) + ".") if quality_breakdown else "no specific gaps — all components scored fully."
 
     quality_instruction = (
-        f"data_quality_score = {quality_score}/100 ({quality_label}). "
+        f"data_quality_score = {quality_score}/100 ({quality_label}). Specific drivers: {breakdown_text} "
         + (
-            "This is below 60. You MUST set confidence to Low regardless of how strong "
-            "the analytical case appears, and state the score and its cause explicitly "
-            "in confidence_explanation."
+            "The score is below 60. You MUST set confidence to Low regardless of how "
+            "strong the analytical case appears. confidence_explanation MUST name the "
+            "specific driver(s) above, not just restate the score."
             if quality_score < 60 else
-            "Confidence can reflect the analysis on its merits, but note any data "
-            "limitations in confidence_explanation if the score is below 80."
+            "Confidence can reflect the analysis on its merits, but if any driver above "
+            "is listed, name the specific one that matters most in confidence_explanation "
+            "rather than a generic restatement of the score."
         )
     )
 
@@ -1049,9 +1136,18 @@ def run_synthesizer(state: dict, chain) -> dict:
         messages, timeout=140, max_tokens=6000, agent_label="Synthesizer", schema=SYNTHESIZER_SCHEMA
     )
 
+    parse_error = False
     try:
         data = json.loads(response)
     except Exception:
+        # This is a real failure, not a legitimate low-confidence result --
+        # the model's response was not valid JSON at all. Flagging it as
+        # parse_error=True lets the UI show this as a failed agent (red,
+        # "Try Start Over") instead of a green "Complete" that just happens
+        # to say Hold/Low. Silently smoothing this into a normal-looking
+        # result is exactly the confident-looking-wrong-answer failure mode
+        # this module's own design is supposed to prevent.
+        parse_error = True
         data = {
             "rating": "Hold", "confidence": "Low",
             "confidence_explanation": "Synthesizer response could not be parsed. Human review required.",
@@ -1081,6 +1177,7 @@ def run_synthesizer(state: dict, chain) -> dict:
         "model_used": model,
         "prompt_sent": messages,
         "synthesizer_data": data,
+        "parse_error": parse_error,
     }
 
 
