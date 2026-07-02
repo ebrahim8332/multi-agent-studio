@@ -33,6 +33,8 @@ AMBER  = RGBColor(0xC8, 0x86, 0x0A)   # H3
 GREY   = RGBColor(0x88, 0x88, 0x88)   # meta text / footer
 BLACK  = RGBColor(0x1A, 0x1A, 0x1A)   # body text
 RULE   = RGBColor(0x2E, 0x75, 0xB6)   # horizontal rule under title
+GREEN  = RGBColor(0x2E, 0x7D, 0x32)   # positive evidence items
+RED    = RGBColor(0xC6, 0x28, 0x28)   # negative evidence items
 
 
 def _set_document_styles(doc: Document) -> None:
@@ -236,6 +238,240 @@ def build_research_doc(state: dict) -> bytes:
         "AI-generated output. Review before use."
     )
     footer_run.font.size      = Pt(8)
+    footer_run.font.color.rgb = GREY
+
+    # ── Return as bytes ──────────────────────────────────────────────────────
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.read()
+
+
+def _bullet_list(doc: Document, items: list, empty_text: str = "No findings returned.") -> None:
+    """Adds a List Bullet paragraph per item, or one placeholder line if empty."""
+    if not items:
+        doc.add_paragraph(empty_text)
+        return
+    for item in items:
+        para = doc.add_paragraph(style="List Bullet")
+        para.paragraph_format.left_indent = Inches(0.3)
+        para.paragraph_format.space_after = Pt(3)
+        _add_bold_runs(para, str(item))
+
+
+def build_stock_research_doc(state: dict) -> bytes:
+    """
+    Builds the Stock Analyser's equity research note as a Word document.
+
+    Renders directly from the structured fields the Synthesizer returned
+    (data_bundle, synthesizer_data, bull_case, bear_case) rather than
+    re-parsing the on-screen research_note text — the plain-text template
+    uses ALL-CAPS headers and unicode rule lines that do not match the
+    ## / ### markdown _add_markdown_content() expects, so both renderers
+    read from the same structured source instead of one parsing the other.
+
+    Args:
+        state: the final Stock Analyser pipeline state — expects
+            data_bundle, synthesizer_data, bull_case, bear_case,
+            evidence_summary, rating, confidence, model_used, time_horizon.
+
+    Returns:
+        bytes: the .docx file contents, ready for st.download_button.
+    """
+    doc = Document()
+    _set_document_styles(doc)
+
+    db           = state.get("data_bundle", {})
+    data         = state.get("synthesizer_data", {})
+    ticker       = db.get("ticker", state.get("ticker", ""))
+    company_name = db.get("company_name", state.get("company_name", ticker))
+    time_horizon = state.get("time_horizon", "")
+    confidence   = state.get("confidence", data.get("confidence", ""))
+    rating       = state.get("rating", data.get("rating", ""))
+    model_used   = state.get("model_used", "unknown")
+    today        = date.today().strftime("%B %d, %Y")
+
+    # ── Title block ──────────────────────────────────────────────────────────
+    title_para = doc.add_paragraph()
+    title_para.paragraph_format.space_after = Pt(4)
+    title_run = title_para.add_run(f"{company_name} ({ticker})")
+    title_run.font.name = "Calibri"
+    title_run.font.size = Pt(22)
+    title_run.font.bold = True
+    title_run.font.color.rgb = NAVY
+
+    meta_para = doc.add_paragraph()
+    meta_para.paragraph_format.space_after = Pt(2)
+    meta_run = meta_para.add_run(
+        f"Equity Research Note — Educational Purpose Only  |  {db.get('sector', '')}  |  "
+        f"{time_horizon}  |  {today}"
+    )
+    meta_run.font.size = Pt(9)
+    meta_run.font.color.rgb = GREY
+
+    _add_horizontal_rule(doc)
+
+    # ── Rating / confidence banner ────────────────────────────────────────────
+    rc_para = doc.add_paragraph()
+    rc_para.paragraph_format.space_after = Pt(4)
+    rc_run = rc_para.add_run(f"RATING: {rating}    CONFIDENCE: {confidence}")
+    rc_run.font.size = Pt(13)
+    rc_run.font.bold = True
+    rc_run.font.color.rgb = BLUE
+    conf_para = doc.add_paragraph()
+    conf_para.paragraph_format.space_after = Pt(10)
+    conf_para.add_run(data.get("confidence_explanation", ""))
+
+    # ── Investment thesis ──────────────────────────────────────────────────────
+    doc.add_heading("Investment Thesis", level=1)
+    p = doc.add_paragraph()
+    _add_bold_runs(p, data.get("investment_thesis", ""))
+
+    doc.add_heading("Fundamentals Summary", level=1)
+    _bullet_list(doc, data.get("fundamentals_bullets", []))
+
+    doc.add_heading("Business Quality Summary", level=1)
+    _bullet_list(doc, data.get("quality_bullets", []))
+
+    doc.add_heading("Key Risks to the Thesis", level=1)
+    _bullet_list(doc, data.get("key_risks", []), empty_text="No risks returned.")
+
+    # ── The debate ─────────────────────────────────────────────────────────────
+    doc.add_heading("The Debate", level=1)
+    doc.add_heading("Bull Case", level=2)
+    p = doc.add_paragraph()
+    _add_bold_runs(p, state.get("bull_case", ""))
+    doc.add_heading("Bear Case", level=2)
+    p = doc.add_paragraph()
+    _add_bold_runs(p, state.get("bear_case", ""))
+    doc.add_heading("Synthesis", level=2)
+    p = doc.add_paragraph()
+    _add_bold_runs(p, data.get("debate_synthesis", ""))
+
+    # ── Valuation context ─────────────────────────────────────────────────────
+    doc.add_heading("Valuation Context", level=1)
+    pe_label = "Trailing" if db.get("pe_used") == "trailing" else "Forward"
+    gross_margin = db.get("gross_margin") or 0
+    operating_margin = db.get("operating_margin") or 0
+    for line in (
+        f"Current Price: ${db.get('current_price')}   |   52-Week Range: "
+        f"${db.get('fifty_two_week_low')} - ${db.get('fifty_two_week_high')}",
+        f"{pe_label} P/E: {db.get('pe_value')}",
+        f"Gross Margin: {gross_margin * 100:.1f}%   |   Operating Margin: {operating_margin * 100:.1f}%",
+    ):
+        doc.add_paragraph(line)
+
+    peers = db.get("peers", [])
+    if peers:
+        doc.add_heading("Peer Comparison", level=2)
+        table = doc.add_table(rows=1, cols=6)
+        table.style = "Light Grid Accent 1"
+        headers = ["Ticker", "P/E", "Gross Margin", "Op. Margin", "Rev. Growth", "Market Cap"]
+        for i, label in enumerate(headers):
+            table.rows[0].cells[i].text = label
+        for peer in peers:
+            row = table.add_row().cells
+            row[0].text = peer.get("ticker", "")
+            row[1].text = f"{peer['pe']:.1f}" if peer.get("pe") is not None else "n/a"
+            row[2].text = f"{peer['gross_margin'] * 100:.1f}%" if peer.get("gross_margin") is not None else "n/a"
+            row[3].text = f"{peer['operating_margin'] * 100:.1f}%" if peer.get("operating_margin") is not None else "n/a"
+            row[4].text = f"{peer['revenue_growth'] * 100:.1f}%" if peer.get("revenue_growth") is not None else "n/a"
+            row[5].text = f"${peer['market_cap'] / 1e9:.1f}B" if peer.get("market_cap") is not None else "n/a"
+
+    dist = db.get("analyst_distribution")
+    if dist:
+        street = (
+            f"{dist['strong_buy'] + dist['buy']} Buy, {dist['hold']} Hold, "
+            f"{dist['sell'] + dist['strong_sell']} Sell ({db.get('analyst_count')} analysts)"
+        )
+    else:
+        street = f"Consensus: {db.get('analyst_consensus_key')} ({db.get('analyst_count')} analysts)"
+
+    upside = None
+    if db.get("analyst_mean_target") and db.get("current_price"):
+        upside = (db["analyst_mean_target"] - db["current_price"]) / db["current_price"] * 100
+
+    doc.add_paragraph(f"Street Consensus: {street}")
+    doc.add_paragraph(
+        f"Mean Price Target: ${db.get('analyst_mean_target')}   |   Implied Upside/Downside: "
+        + (f"{upside:+.1f}%" if upside is not None else "n/a")
+    )
+    doc.add_paragraph(f"This Analysis vs Street: {data.get('street_comparison', '')}")
+    dq_para = doc.add_paragraph()
+    dq_run = dq_para.add_run(f"Data Quality Score: {db.get('data_quality_score')} / 100 — {db.get('data_quality_label')}")
+    dq_run.bold = True
+
+    doc.add_heading("Trend Summary", level=1)
+    doc.add_paragraph(data.get("trend_summary", ""))
+
+    doc.add_heading("Earnings Quality", level=1)
+    doc.add_paragraph(data.get("earnings_quality_summary", ""))
+
+    doc.add_heading("Upcoming Catalysts", level=1)
+    catalysts = db.get("catalyst_items", [])
+    if catalysts:
+        for item in catalysts:
+            para = doc.add_paragraph(style="List Bullet")
+            para.add_run(f"{item.get('title', '')}: {item.get('content', '')[:200]}")
+    else:
+        doc.add_paragraph("No upcoming catalysts identified.")
+
+    doc.add_heading("Macro Context", level=1)
+    doc.add_paragraph(db.get("macro_context") or "No sector macro context available.")
+
+    doc.add_heading("Investor Type", level=1)
+    doc.add_paragraph(f"This thesis suits a {data.get('investor_type', 'value')} investor with a {time_horizon} horizon.")
+
+    # ── Key evidence ───────────────────────────────────────────────────────────
+    doc.add_heading("Key Evidence", level=1)
+    evidence = state.get("evidence_summary", [])
+    pos_count = sum(1 for e in evidence if e.get("sign") == "+")
+    neg_count = sum(1 for e in evidence if e.get("sign") == "-")
+    doc.add_paragraph(f"{pos_count} positive signal(s), {neg_count} negative signal(s).")
+    for item in evidence:
+        para = doc.add_paragraph(style="List Bullet")
+        run = para.add_run(f"[{item.get('sign', '?')}] {item.get('text', '')}")
+        run.font.color.rgb = GREEN if item.get("sign") == "+" else RED
+
+    doc.add_heading("What This Analysis Cannot Know", level=1)
+    for line in (
+        "Private management guidance not disclosed publicly",
+        "Undisclosed material events (pending litigation, M&A, regulatory actions)",
+        "Real-time order flow and institutional positioning",
+        "Your personal financial situation, risk tolerance, and investment goals",
+        "Tax implications of any transaction",
+    ):
+        doc.add_paragraph(line, style="List Bullet")
+
+    # ── Disclaimer — bordered table cell, per spec ────────────────────────────
+    doc.add_paragraph("")
+    disclaimer_table = doc.add_table(rows=1, cols=1)
+    disclaimer_table.style = "Table Grid"
+    cell = disclaimer_table.rows[0].cells[0]
+    p = cell.paragraphs[0]
+    header_run = p.add_run("DISCLAIMER\n")
+    header_run.bold = True
+    header_run.font.size = Pt(9)
+    header_run.font.color.rgb = GREY
+    body_run = p.add_run(
+        "This analysis was produced by an AI system for educational and personal learning "
+        "purposes only. It is not investment advice. It does not constitute a recommendation "
+        "to buy, sell, or hold any security. Past performance is not indicative of future "
+        "results. The analysis relies on publicly available data and is subject to the "
+        "limitations described in the \"What This Analysis Cannot Know\" section above. "
+        "Do not make investment decisions based on this output."
+    )
+    body_run.font.size = Pt(9)
+    body_run.font.color.rgb = GREY
+
+    # ── Footer ───────────────────────────────────────────────────────────────
+    doc.add_paragraph("")
+    footer_para = doc.add_paragraph()
+    footer_run = footer_para.add_run(
+        f"Generated by Multi-Agent Studio — Stock Analyser  |  Model: {model_used}  |  {today}\n"
+        "AI-generated output. Review before use. Not investment advice."
+    )
+    footer_run.font.size = Pt(8)
     footer_run.font.color.rgb = GREY
 
     # ── Return as bytes ──────────────────────────────────────────────────────

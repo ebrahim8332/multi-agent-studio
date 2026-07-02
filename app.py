@@ -5,7 +5,6 @@ Renders the sidebar navigation and routes to the selected module.
 Modules not yet built show a Coming Soon placeholder automatically.
 """
 
-import traceback
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -21,7 +20,7 @@ st.set_page_config(
 MODULES = {
     "🏠 Welcome":                    None,
     "📝 Research Assistant":          "m01_research_assistant",
-    "🔍 Competitive Intelligence":    None,
+    "📊 Equity Research":             "m02_stock",
     "📄 Document Interrogator":       None,
     "📅 Meeting Prep":                None,
     "⚖️ Regulatory Watch":            None,
@@ -56,8 +55,8 @@ if selection == "🏠 Welcome":
 
         | Module | What it does |
         |--------|-------------|
-        | 📝 Research Assistant | Enter a topic — five agents research, critique, write, and edit a structured paper |
-        | 🔍 Competitive Intelligence | Enter a company — agents produce a structured competitive briefing |
+        | 📝 Research Assistant | Enter a topic — eight agents research, critique, debate, fact-check, and edit a structured paper |
+        | 📊 Equity Research | Enter a ticker — eight agents pull real financials, debate bull vs. bear, and issue a rated research note |
         | 📄 Document Interrogator | Upload a document — agents extract claims, fact-check them, and return a verdict |
         | 📅 Meeting Prep | Enter a company and meeting date — agents build a one-page pre-meeting brief |
         | ⚖️ Regulatory Watch | Monitor defined topics for regulatory developments |
@@ -84,5 +83,3 @@ else:
         mod.render()
     except Exception as e:
         st.error(f"Module failed to load: {e}")
-        with st.expander("Full error (for debugging)"):
-            st.code(traceback.format_exc())

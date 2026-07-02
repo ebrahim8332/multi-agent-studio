@@ -365,3 +365,63 @@ class SearchChain:
 def get_search_chain() -> SearchChain:
     """Returns a ready-to-use SearchChain. Call this from any agent."""
     return SearchChain()
+
+
+# ── Direct single-provider access ────────────────────────────────────────────
+#
+# The functions above form a fallback CHAIN — Tavily, then Exa, then Serper,
+# each one covering for the others. Some modules need the opposite: always
+# use Tavily for one job (recency, news) and always use Exa for a different
+# job (semantic, qualitative research), never substituting one for the other.
+# These two functions call a single provider directly and degrade to an
+# empty list on any error or missing key — they never raise, matching the
+# graceful-degradation behaviour of the rest of this file.
+
+def search_tavily_only(query: str, max_results: int = 5, days: int | None = None) -> list[dict]:
+    """
+    Calls Tavily directly. Supports Tavily's `days` recency filter (only
+    returns results published within the last N days) — the fallback
+    chain's _search_tavily() does not expose this parameter.
+    """
+    import os
+    try:
+        from tavily import TavilyClient
+        api_key = os.getenv("TAVILY_API_KEY")
+        if not api_key:
+            return []
+        client = TavilyClient(api_key=api_key)
+        kwargs = {"query": query, "search_depth": "advanced", "max_results": max_results}
+        if days:
+            kwargs["days"] = days
+        response = client.search(**kwargs)
+        return [
+            {"title": r.get("title", ""), "url": r.get("url", ""), "content": r.get("content", "")}
+            for r in response.get("results", [])
+        ]
+    except Exception:
+        return []
+
+
+def search_exa_only(query: str, max_results: int = 5) -> list[dict]:
+    """
+    Calls Exa directly, with full article text via search_and_contents()
+    (plain search() returns snippets too short for qualitative synthesis).
+    Exa is tuned for semantic/qualitative search — moat, brand, competitive
+    position — where Tavily is tuned for recency and news.
+    """
+    import os
+    try:
+        from exa_py import Exa
+        api_key = os.getenv("EXA_API_KEY")
+        if not api_key:
+            return []
+        client = Exa(api_key=api_key)
+        response = client.search_and_contents(
+            query, num_results=max_results, text={"max_characters": 2000}, use_autoprompt=True
+        )
+        return [
+            {"title": r.title or "", "url": r.url or "", "content": (r.text or "")[:2000]}
+            for r in response.results
+        ]
+    except Exception:
+        return []

@@ -1,7 +1,7 @@
 # PROJECT.md — multi-agent-studio
 
-## Status: Module 1 complete. Model chain updated Session 8 — Llama 4 Scout replaced with Qwen3.6-27B. Next module TBD.
-## Last updated: 2026-06-25
+## Status: Module 1 live. Module 2 (Stock Analyser) built and tested end-to-end, pending push to Streamlit Cloud.
+## Last updated: 2026-07-02
 
 ---
 
@@ -10,7 +10,7 @@
 | # | Module | Status |
 |---|--------|--------|
 | 1 | Research Assistant | Live |
-| 2 | Competitive Intelligence Monitor | Not Started |
+| 2 | Stock Analyser (Equity Research) | Built and tested locally — not yet pushed |
 | 3 | Document Interrogator | Not Started |
 | 4 | Meeting Prep Agent | Not Started |
 | 5 | Regulatory Watch Agent | Not Started |
@@ -42,10 +42,19 @@
 - [x] End-to-end test passed (topic: AI governance frameworks for enterprise adoption)
 - [x] Deployed — pushed to GitHub, Streamlit Cloud auto-deploys
 
-### Phase 3: Next Module — TBD
-- [ ] Alnoor deciding on next module. Original spec was Competitive Intelligence but reconsidering.
-- [ ] Key discussion: next module should teach something architecturally new (branching, parallel agents, loops, conditional routing) — not just a repeat of the linear 5-agent pattern from Module 1.
-- [ ] 22 ideas explored across enterprise, agentic, and decision-support use cases. None confirmed yet.
+### Phase 3: Module 2 — Stock Analyser
+- [x] Spec confirmed (v2.0): replaces Competitive Intelligence Monitor in the module slot
+- [x] Prototyped yfinance field availability against live tickers before writing agents.py — caught two spec mismatches early: yfinance's sector names don't match GICS (spec used "Financials", yfinance returns "Financial Services", etc.), and there's no quarterly revenue-surprise history, only EPS
+- [x] modules/m02_stock/agents.py — Resolver, Data Agent (completeness gate, data quality score, peer comparison, trend data, earnings history, news tiering, macro query), Fundamentals/Business Quality/Risk analysts, Bull/Bear advocates, Synthesizer (schema-enforced JSON, research note assembled in Python)
+- [x] modules/m02_stock/pipeline.py — LangGraph StateGraph (documents the flow; UI drives agents directly for checkpoint control, same convention as Module 1)
+- [x] utils/doc_builder.py — added build_stock_research_doc()
+- [x] utils/search_client.py — added search_tavily_only() / search_exa_only() for direct single-provider access (Tavily for news/catalysts/macro, Exa for qualitative research — not a fallback chain between them)
+- [x] utils/model_client.py — added optional call_log_key param to FallbackChain/get_chain() so each module's token usage tracks independently (found and fixed during testing — Module 2's run summary was silently empty because it read from a different key than the chain wrote to)
+- [x] modules/m02_stock/ui.py — phase state machine, fan-out panels (3-way then 2-way), 3 Plotly charts, explainability panel, run summary, download
+- [x] Wired into app.py as "📊 Equity Research", replacing the Competitive Intelligence placeholder
+- [x] End-to-end test passed: AAPL (full run, Buy/Hold/Sell rating produced, all 8 agent panels, 3 charts, evidence panel, docx download) and MSFT (second full run via script, confirmed rating="Buy")
+- [x] Halt path tested: invalid ticker, and two real thin-data tickers (BBIG halts on missing ROE, GNS halts on missing revenue growth) — both halt cleanly with the exact spec error format, no LLM agent runs
+- [ ] Not yet pushed to GitHub / Streamlit Cloud — pending Alnoor's go-ahead
 
 ### Phase 4: Module 3 — Document Interrogator
 - [ ] Not started

@@ -116,9 +116,11 @@ class FallbackChain:
     successful call. Use chain.usage_summary to read totals.
     """
 
-    def __init__(self, providers: list[BaseProvider], session_state: dict):
+    def __init__(self, providers: list[BaseProvider], session_state: dict,
+                 call_log_key: str = CALL_LOG_KEY):
         self.providers = providers
         self.session_state = session_state
+        self.call_log_key = call_log_key
 
     def complete(self, messages: list[dict], timeout: int = 90,
                  max_tokens: int | None = None,
@@ -139,14 +141,14 @@ class FallbackChain:
                 self.session_state["locked_model_name"] = provider.model_name
 
                 # Accumulate usage
-                log = list(self.session_state.get(CALL_LOG_KEY, []))
+                log = list(self.session_state.get(self.call_log_key, []))
                 log.append({
                     "agent":         agent_label,
                     "model":         provider.model_name,
                     "input_tokens":  input_tok,
                     "output_tokens": output_tok,
                 })
-                self.session_state[CALL_LOG_KEY] = log
+                self.session_state[self.call_log_key] = log
 
                 return text, provider.model_name
             except FallbackTrigger as e:
@@ -175,7 +177,7 @@ class FallbackChain:
         Reads from session_state so it works across multiple chain instances.
         Cost is estimated from APPROX_PRICING — not a billing figure.
         """
-        log = self.session_state.get(CALL_LOG_KEY, [])
+        log = self.session_state.get(self.call_log_key, [])
 
         total_input  = sum(e["input_tokens"]  for e in log)
         total_output = sum(e["output_tokens"] for e in log)
@@ -199,11 +201,17 @@ class FallbackChain:
         }
 
 
-def get_chain(session_state: dict) -> FallbackChain:
+def get_chain(session_state: dict, call_log_key: str = CALL_LOG_KEY) -> FallbackChain:
     """Call this from any module to get a ready-to-use chain.
 
     Providers are built fresh on each call — never cached. Caching provider
     objects in Streamlit causes class identity mismatches on hot-reload.
+
+    call_log_key defaults to "m01_call_log" so Module 1 needs no changes.
+    Pass a module-specific key (e.g. "m02_call_log") so each module's run
+    summary reflects only its own token usage — without this, two modules
+    used in the same browser session would silently share one accumulated
+    log and each would report the other's cost.
     """
     providers = build_chain()
-    return FallbackChain(providers, session_state)
+    return FallbackChain(providers, session_state, call_log_key=call_log_key)
