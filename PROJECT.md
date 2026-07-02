@@ -1,6 +1,6 @@
 # PROJECT.md — multi-agent-studio
 
-## Status: Module 1 live. Module 2 (Stock Analyser) built and tested end-to-end, pending push to Streamlit Cloud.
+## Status: Module 1 live. Module 2 (Stock Analyser) built, tested, and pushed to GitHub — Streamlit Cloud redeploying.
 ## Last updated: 2026-07-02
 
 ---
@@ -10,7 +10,7 @@
 | # | Module | Status |
 |---|--------|--------|
 | 1 | Research Assistant | Live |
-| 2 | Stock Analyser (Equity Research) | Built and tested locally — not yet pushed |
+| 2 | Stock Analyser (Equity Research) | Live |
 | 3 | Document Interrogator | Not Started |
 | 4 | Meeting Prep Agent | Not Started |
 | 5 | Regulatory Watch Agent | Not Started |
@@ -54,7 +54,7 @@
 - [x] Wired into app.py as "📊 Equity Research", replacing the Competitive Intelligence placeholder
 - [x] End-to-end test passed: AAPL (full run, Buy/Hold/Sell rating produced, all 8 agent panels, 3 charts, evidence panel, docx download) and MSFT (second full run via script, confirmed rating="Buy")
 - [x] Halt path tested: invalid ticker, and two real thin-data tickers (BBIG halts on missing ROE, GNS halts on missing revenue growth) — both halt cleanly with the exact spec error format, no LLM agent runs
-- [ ] Not yet pushed to GitHub / Streamlit Cloud — pending Alnoor's go-ahead
+- [x] Pushed to GitHub (ebrahim8332/multi-agent-studio) 2026-07-02 — Streamlit Cloud auto-deploys
 
 ### Phase 4: Module 3 — Document Interrogator
 - [ ] Not started
