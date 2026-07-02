@@ -972,6 +972,39 @@ VERIFIABLE_METRICS = {
     "analyst_mean_target":     (False, "Analyst mean price target"),
 }
 
+_DOLLAR_METRICS = {
+    "free_cash_flow", "revenue_ttm", "market_cap", "current_price",
+    "fifty_two_week_high", "fifty_two_week_low", "analyst_mean_target",
+    "eps_trailing",
+}
+
+
+def format_metric_value(metric: str, value) -> str:
+    """
+    Professional display formatting for a Fact Checker true_value. Without
+    this, both the on-screen checkpoint and the Word doc showed a raw
+    unformatted float for every metric -- e.g. "46335873024.00" for free
+    cash flow instead of "$46.34 billion", and "74.14" instead of "74.14%"
+    for percent metrics. Shared by the checkpoint gate (ui.py), the Word
+    doc (doc_builder.py), and this module's own mismatch reason string, so
+    all three always agree on how a given metric is displayed.
+    """
+    if value is None:
+        return "n/a"
+    is_percent = VERIFIABLE_METRICS.get(metric, (False, ""))[0]
+    if is_percent:
+        return f"{value:.2f}%"
+    if metric in _DOLLAR_METRICS:
+        abs_value = abs(value)
+        if abs_value >= 1e12:
+            return f"${value / 1e12:,.2f} trillion"
+        if abs_value >= 1e9:
+            return f"${value / 1e9:,.2f} billion"
+        if abs_value >= 1e6:
+            return f"${value / 1e6:,.2f} million"
+        return f"${value:,.2f}"
+    return f"{value:.2f}"
+
 FACT_CHECK_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1058,10 +1091,9 @@ def _verify_claim(db: dict, metric: str, claimed_value_str: str) -> dict:
 
     if diff <= tolerance:
         return {"verdict": "Confirmed", "true_value": true_value, "reason": ""}
-    unit = "%" if is_percent else ""
     return {
         "verdict": "Mismatch", "true_value": true_value,
-        "reason": f"claimed {claimed_value_str}, actual is {true_value:.2f}{unit}",
+        "reason": f"claimed {claimed_value_str}, actual is {format_metric_value(metric, true_value)}",
     }
 
 

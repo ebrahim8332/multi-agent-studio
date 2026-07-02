@@ -38,6 +38,7 @@ from utils.doc_builder import build_stock_research_doc
 from modules.m02_stock.agents import (
     run_resolver, run_data_agent, run_fundamentals_analyst, run_quality_analyst,
     run_risk_analyst, run_fact_checker, run_bull_advocate, run_bear_advocate, run_synthesizer,
+    format_metric_value,
 )
 
 TIME_HORIZON_OPTIONS = [
@@ -780,8 +781,7 @@ def render() -> None:
             for c in claims:
                 if c["verdict"] != "Mismatch":
                     continue
-                true_val = c.get("true_value")
-                true_str = f"{true_val:.2f}" if isinstance(true_val, (int, float)) else "n/a"
+                true_str = format_metric_value(c.get("metric", ""), c.get("true_value"))
                 st.markdown(
                     f"**{c['source_agent']}** claimed **{c['metric']}** = `{c['claimed_value']}` — "
                     f"actual value is `{true_str}`.\n\n> {c['claim_text']}"

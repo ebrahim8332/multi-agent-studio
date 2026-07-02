@@ -410,6 +410,8 @@ def build_stock_research_doc(state: dict) -> bytes:
     # same claim-by-claim detail the on-screen gate shows before proceeding.
     fc_claims = state.get("fact_check_claims", [])
     if fc_claims:
+        from modules.m02_stock.agents import format_metric_value
+
         doc.add_heading("Fact Check Results", level=1)
         doc.add_paragraph(state.get("fact_check_summary", ""))
         mismatches = [c for c in fc_claims if c.get("verdict") == "Mismatch"]
@@ -419,12 +421,10 @@ def build_stock_research_doc(state: dict) -> bytes:
             for i, label in enumerate(["Metric", "Claimed", "Actual", "Made by"]):
                 table.rows[0].cells[i].text = label
             for c in mismatches:
-                true_val = c.get("true_value")
-                true_str = f"{true_val:.2f}" if isinstance(true_val, (int, float)) else "n/a"
                 row = table.add_row().cells
                 row[0].text = str(c.get("metric", ""))
                 row[1].text = str(c.get("claimed_value", ""))
-                row[2].text = true_str
+                row[2].text = format_metric_value(c.get("metric", ""), c.get("true_value"))
                 row[3].text = str(c.get("source_agent", ""))
             note_para = doc.add_paragraph()
             note_run = note_para.add_run(
