@@ -400,6 +400,41 @@ def build_stock_research_doc(state: dict) -> bytes:
     dq_para = doc.add_paragraph()
     dq_run = dq_para.add_run(f"Data Quality Score: {db.get('data_quality_score')} / 100 — {db.get('data_quality_label')}")
     dq_run.bold = True
+    for note in db.get("data_quality_breakdown", []):
+        doc.add_paragraph(f"• {note.capitalize()}", style="List Bullet")
+
+    # ── Fact Check results — mirrors the on-screen checkpoint gate ───────────
+    # Without this section the only trace of a fact-check override was one
+    # sentence buried inside confidence_explanation, with no claim/actual detail.
+    # A reader who only sees the downloaded doc (not the live app) needs the
+    # same claim-by-claim detail the on-screen gate shows before proceeding.
+    fc_claims = state.get("fact_check_claims", [])
+    if fc_claims:
+        doc.add_heading("Fact Check Results", level=1)
+        doc.add_paragraph(state.get("fact_check_summary", ""))
+        mismatches = [c for c in fc_claims if c.get("verdict") == "Mismatch"]
+        if mismatches:
+            table = doc.add_table(rows=1, cols=4)
+            table.style = "Light Grid Accent 1"
+            for i, label in enumerate(["Metric", "Claimed", "Actual", "Made by"]):
+                table.rows[0].cells[i].text = label
+            for c in mismatches:
+                true_val = c.get("true_value")
+                true_str = f"{true_val:.2f}" if isinstance(true_val, (int, float)) else "n/a"
+                row = table.add_row().cells
+                row[0].text = str(c.get("metric", ""))
+                row[1].text = str(c.get("claimed_value", ""))
+                row[2].text = true_str
+                row[3].text = str(c.get("source_agent", ""))
+            note_para = doc.add_paragraph()
+            note_run = note_para.add_run(
+                "A mismatch above was reviewed and proceeded past by the user. "
+                "Confidence in this report was capped accordingly."
+            )
+            note_run.font.color.rgb = AMBER
+            note_run.bold = True
+        else:
+            doc.add_paragraph("All checked claims matched the underlying data.")
 
     doc.add_heading("Trend Summary", level=1)
     doc.add_paragraph(data.get("trend_summary", ""))

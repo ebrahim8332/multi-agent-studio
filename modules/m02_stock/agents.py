@@ -351,12 +351,20 @@ def _fetch_analyst_distribution(t: "yf.Ticker") -> dict | None:
     if rec_df is None or rec_df.empty:
         return None
     row = rec_df.iloc[0]
+
+    def _count(field: str) -> int:
+        # Plain "value or 0" breaks here: yfinance can return NaN for a
+        # thinly-covered ticker, and NaN is truthy in Python, so int(NaN)
+        # would raise ValueError instead of falling back to 0.
+        value = row.get(field, 0)
+        return 0 if _is_missing(value) else int(value)
+
     return {
-        "strong_buy": int(row.get("strongBuy", 0) or 0),
-        "buy": int(row.get("buy", 0) or 0),
-        "hold": int(row.get("hold", 0) or 0),
-        "sell": int(row.get("sell", 0) or 0),
-        "strong_sell": int(row.get("strongSell", 0) or 0),
+        "strong_buy": _count("strongBuy"),
+        "buy": _count("buy"),
+        "hold": _count("hold"),
+        "sell": _count("sell"),
+        "strong_sell": _count("strongSell"),
     }
 
 
@@ -473,11 +481,12 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
     # different "debt-to-equity" figures for the same company in the same
     # prompt. Found by the Fact Checker flagging a "wrong" analyst claim that
     # was actually correct against the trend table and only wrong against
-    # this raw field -- falls back to the raw field only if the balance
-    # sheet computation is unavailable.
+    # this raw field. No fallback to info["debtToEquity"] here on purpose --
+    # that field is the wrong-scale one described above, so if the balance
+    # sheet computation isn't available, debt_to_equity is left None and the
+    # required-fields check below halts the pipeline instead of silently
+    # substituting a value already proven wrong.
     debt_to_equity = trend_data[-1]["debt_to_equity"] if trend_data else None
-    if debt_to_equity is None:
-        debt_to_equity = _safe_float(info.get("debtToEquity"))
 
     # ── Required fields — first missing one halts the pipeline ──────────────
     required_checks = [
@@ -1074,7 +1083,16 @@ def run_fact_checker(state: dict, chain) -> dict:
     fundamentals_text = state.get("fundamentals_analysis", "")
     risk_text = state.get("risk_analysis", "")
 
-    metric_list = "\n".join(f"- {key}: {label}" for key, (_, label) in VERIFIABLE_METRICS.items())
+    # pe_value's label is dynamic, not static: only ONE P/E convention (trailing
+    # or forward) is ever fetched and shown to the analysts (see pe_used/pe_value
+    # in run_data_agent), so the Fact Checker must be told which one is ground
+    # truth for this run -- an ambiguous "trailing or forward" label risks a false
+    # mismatch if the model cites the other convention from its own training data.
+    pe_label = f"P/E ratio ({db.get('pe_used', 'trailing')})"
+    metric_list = "\n".join(
+        f"- {key}: {pe_label if key == 'pe_value' else label}"
+        for key, (_, label) in VERIFIABLE_METRICS.items()
+    )
 
     messages = [
         {
@@ -1463,6 +1481,13 @@ def run_synthesizer(state: dict, chain) -> dict:
             ).strip()
 
     research_note = _build_research_note(db, state, data, confidence, time_horizon)
+
+    # Overwrite, don't just return separately -- data["confidence"] otherwise
+    # keeps the LLM's raw, pre-override value forever, latent inside
+    # synthesizer_data. Nothing today reads it instead of the top-level
+    # "confidence" key, but if any future caller ever did, it would display a
+    # confidence level that contradicts the enforced override above.
+    data["confidence"] = confidence
 
     return {
         "research_note": research_note,

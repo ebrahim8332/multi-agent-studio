@@ -390,7 +390,13 @@ def search_tavily_only(query: str, max_results: int = 5, days: int | None = None
         if not api_key:
             return []
         client = TavilyClient(api_key=api_key)
-        kwargs = {"query": query, "search_depth": "advanced", "max_results": max_results}
+        # Explicit timeout, shorter than the SDK's own 60s default. This call
+        # runs synchronously (not inside a ThreadPoolExecutor), and
+        # run_data_agent makes up to 3 of these back to back -- at the SDK
+        # default that's a worst case of 180s with the whole app frozen and
+        # no cancel option. 20s keeps that worst case bounded while still
+        # generous for a normal response.
+        kwargs = {"query": query, "search_depth": "advanced", "max_results": max_results, "timeout": 20}
         if days:
             kwargs["days"] = days
         response = client.search(**kwargs)

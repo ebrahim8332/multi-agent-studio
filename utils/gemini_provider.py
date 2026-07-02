@@ -39,8 +39,12 @@ class GeminiProvider(BaseProvider):
             ) from e
 
         except Exception as e:
+            # No raw str(e) here, matching the ServerError branch above --
+            # this is the catch-all for whatever the SDK/httpx layer throws,
+            # and unlike ClientError/ServerError it isn't a structured object
+            # guaranteed to be free of request-level detail.
             raise FallbackTrigger(
-                f"Gemini unexpected error ({type(e).__name__}) on {self.model_name}: {e}"
+                f"Gemini unexpected error ({type(e).__name__}) on {self.model_name}"
             ) from e
 
     def _call(self, messages: list[dict], timeout: int, temperature: float = 0.3,

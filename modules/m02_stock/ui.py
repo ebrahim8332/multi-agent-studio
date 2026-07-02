@@ -68,6 +68,11 @@ _STATE_KEYS = [
     "m02_phase", "m02_ticker", "m02_company_name", "m02_time_horizon",
     "m02_data_bundle", "m02_pipeline_state", "m02_agent_outputs", "m02_error",
     "m02_call_log", "locked_provider_index", "locked_model_name",
+    # Set by FallbackChain.complete() in model_client.py, not by this file --
+    # without it here, a rate-limit/fallback event from ticker A's run stays
+    # in session state and silently carries into ticker B's run after
+    # Start Over.
+    "_fallback_errors",
 ]
 
 RISK_CATEGORY_KEYWORDS = {
@@ -525,34 +530,44 @@ def render() -> None:
         for name, label, desc in AGENTS[1:]:
             _agent_panel(ph[name], label, desc, STATUS_WAITING)
 
-        with st.spinner(f"Resolving '{pending_input}'..."):
-            resolved = run_resolver(pending_input)
+        # Guards on each step so a rerun mid-flight (network stall, browser
+        # resize, refresh) resumes from whichever step already finished
+        # instead of re-running yfinance/Tavily calls from scratch.
+        ticker = st.session_state.get("m02_ticker")
+        company_name = st.session_state.get("m02_company_name")
+        if not ticker:
+            with st.spinner(f"Resolving '{pending_input}'..."):
+                resolved = run_resolver(pending_input)
 
-        if resolved["halted"]:
-            st.session_state["m02_error"] = resolved["error"]
-            st.session_state["m02_phase"] = "error"
-            st.rerun()
-            return
+            if resolved["halted"]:
+                st.session_state["m02_error"] = resolved["error"]
+                st.session_state["m02_phase"] = "error"
+                st.rerun()
+                return
 
-        ticker = resolved["ticker"]
-        company_name = resolved["company_name"]
-        st.session_state["m02_ticker"] = ticker
-        st.session_state["m02_company_name"] = company_name
+            ticker = resolved["ticker"]
+            company_name = resolved["company_name"]
+            st.session_state["m02_ticker"] = ticker
+            st.session_state["m02_company_name"] = company_name
+
         _agent_panel(resolver_ph, "Agent 1: Resolver", "Validated the ticker",
                      STATUS_COMPLETE, output=f"{company_name} ({ticker})")
 
         _agent_panel(data_ph, "Agent 2: Data Agent", "Pulling financials, peers, and news...",
                      STATUS_RUNNING, running=True)
-        with st.spinner("Pulling financials, peers, and news (yfinance + Tavily)..."):
-            data_bundle = run_data_agent(ticker, company_name)
+        data_bundle = st.session_state.get("m02_data_bundle")
+        if not data_bundle:
+            with st.spinner("Pulling financials, peers, and news (yfinance + Tavily)..."):
+                data_bundle = run_data_agent(ticker, company_name)
 
-        if data_bundle["halted"]:
-            st.session_state["m02_error"] = data_bundle["error"]
-            st.session_state["m02_phase"] = "error"
-            st.rerun()
-            return
+            if data_bundle["halted"]:
+                st.session_state["m02_error"] = data_bundle["error"]
+                st.session_state["m02_phase"] = "error"
+                st.rerun()
+                return
 
-        st.session_state["m02_data_bundle"] = data_bundle
+            st.session_state["m02_data_bundle"] = data_bundle
+
         st.session_state["m02_phase"] = "data_checkpoint"
         st.rerun()
         return
@@ -640,30 +655,38 @@ def render() -> None:
         for name, label, desc in AGENTS[5:]:
             _agent_panel(ph[name], label, desc, STATUS_WAITING)
 
-        state_for_agents = {"data_bundle": db, "time_horizon": time_horizon}
-        with st.spinner("Running Fundamentals, Business Quality, and Risk analysts simultaneously..."):
-            results, errors = _run_parallel(st.session_state, [
-                (run_fundamentals_analyst, (state_for_agents,)),
-                (run_quality_analyst,      (state_for_agents,)),
-                (run_risk_analyst,         (state_for_agents,)),
-            ])
+        # Only run once. This is the most expensive step in the pipeline (3
+        # concurrent LLM calls) and it can take up to 180s -- without this
+        # guard, any rerun that fires while _run_parallel is still in flight
+        # (browser resize, flaky reconnect, refresh) would re-enter this block
+        # and fire a second full fan-out, doubling the API cost and racing two
+        # writes to pipeline_state. Same guard pattern as fact_checking below.
+        if "fundamentals_analysis" not in pipeline_state:
+            state_for_agents = {"data_bundle": db, "time_horizon": time_horizon}
+            with st.spinner("Running Fundamentals, Business Quality, and Risk analysts simultaneously..."):
+                results, errors = _run_parallel(st.session_state, [
+                    (run_fundamentals_analyst, (state_for_agents,)),
+                    (run_quality_analyst,      (state_for_agents,)),
+                    (run_risk_analyst,         (state_for_agents,)),
+                ])
 
-        if any(r is None for r in results):
-            failed = [AGENTS[2 + i][1] for i, r in enumerate(results) if r is None]
-            st.error(f"Analyst agent(s) failed: {', '.join(failed)}. Try Start Over.")
-            for name, label, desc in AGENTS[2:5]:
-                _agent_panel(ph[name], label, desc, STATUS_FAILED)
-            return
+            if any(r is None for r in results):
+                failed = [AGENTS[2 + i][1] for i, r in enumerate(results) if r is None]
+                st.error(f"Analyst agent(s) failed: {', '.join(failed)}. Try Start Over.")
+                for name, label, desc in AGENTS[2:5]:
+                    _agent_panel(ph[name], label, desc, STATUS_FAILED)
+                return
 
-        pipeline_state["fundamentals_analysis"] = results[0]["fundamentals_analysis"]
-        pipeline_state["quality_analysis"] = results[1]["quality_analysis"]
-        pipeline_state["risk_analysis"] = results[2]["risk_analysis"]
-        agent_outputs["fundamentals"] = {"output": results[0]["fundamentals_analysis"], "model": results[0]["model_used"], "prompt": results[0]["prompt_sent"], "thin_output": results[0].get("thin_output"), "word_count": results[0].get("word_count")}
-        agent_outputs["quality"]      = {"output": results[1]["quality_analysis"],      "model": results[1]["model_used"], "prompt": results[1]["prompt_sent"], "thin_output": results[1].get("thin_output"), "word_count": results[1].get("word_count")}
-        agent_outputs["risk"]         = {"output": results[2]["risk_analysis"],         "model": results[2]["model_used"], "prompt": results[2]["prompt_sent"], "thin_output": results[2].get("thin_output"), "word_count": results[2].get("word_count")}
+            pipeline_state["fundamentals_analysis"] = results[0]["fundamentals_analysis"]
+            pipeline_state["quality_analysis"] = results[1]["quality_analysis"]
+            pipeline_state["risk_analysis"] = results[2]["risk_analysis"]
+            agent_outputs["fundamentals"] = {"output": results[0]["fundamentals_analysis"], "model": results[0]["model_used"], "prompt": results[0]["prompt_sent"], "thin_output": results[0].get("thin_output"), "word_count": results[0].get("word_count")}
+            agent_outputs["quality"]      = {"output": results[1]["quality_analysis"],      "model": results[1]["model_used"], "prompt": results[1]["prompt_sent"], "thin_output": results[1].get("thin_output"), "word_count": results[1].get("word_count")}
+            agent_outputs["risk"]         = {"output": results[2]["risk_analysis"],         "model": results[2]["model_used"], "prompt": results[2]["prompt_sent"], "thin_output": results[2].get("thin_output"), "word_count": results[2].get("word_count")}
 
-        st.session_state["m02_pipeline_state"] = pipeline_state
-        st.session_state["m02_agent_outputs"] = agent_outputs
+            st.session_state["m02_pipeline_state"] = pipeline_state
+            st.session_state["m02_agent_outputs"] = agent_outputs
+
         st.session_state["m02_phase"] = "fact_checking"
         st.rerun()
         return
@@ -802,26 +825,30 @@ def render() -> None:
         _agent_panel(bear_ph, "Agent 8: Bear Advocate", "Building the strongest case against owning it...", STATUS_RUNNING, running=True)
         _agent_panel(synth_ph, "Agent 9: Synthesizer", "Weighs the debate and issues the rating", STATUS_WAITING)
 
-        state_for_advocates = {"data_bundle": db, "time_horizon": time_horizon, **pipeline_state}
-        with st.spinner("Running Bull and Bear advocates simultaneously..."):
-            results, errors = _run_parallel(st.session_state, [
-                (run_bull_advocate, (state_for_advocates,)),
-                (run_bear_advocate, (state_for_advocates,)),
-            ])
+        # Same re-entrancy guard as analysts_running above -- without it, a
+        # rerun mid-flight re-fires both advocate LLM calls a second time.
+        if "bull_case" not in pipeline_state:
+            state_for_advocates = {"data_bundle": db, "time_horizon": time_horizon, **pipeline_state}
+            with st.spinner("Running Bull and Bear advocates simultaneously..."):
+                results, errors = _run_parallel(st.session_state, [
+                    (run_bull_advocate, (state_for_advocates,)),
+                    (run_bear_advocate, (state_for_advocates,)),
+                ])
 
-        if any(r is None for r in results):
-            st.error("Bull or Bear advocate failed. Try Start Over.")
-            _agent_panel(bull_ph, "Agent 7: Bull Advocate", "", STATUS_FAILED)
-            _agent_panel(bear_ph, "Agent 8: Bear Advocate", "", STATUS_FAILED)
-            return
+            if any(r is None for r in results):
+                st.error("Bull or Bear advocate failed. Try Start Over.")
+                _agent_panel(bull_ph, "Agent 7: Bull Advocate", "", STATUS_FAILED)
+                _agent_panel(bear_ph, "Agent 8: Bear Advocate", "", STATUS_FAILED)
+                return
 
-        pipeline_state["bull_case"] = results[0]["bull_case"]
-        pipeline_state["bear_case"] = results[1]["bear_case"]
-        agent_outputs["bull"] = {"output": results[0]["bull_case"], "model": results[0]["model_used"], "prompt": results[0]["prompt_sent"], "thin_output": results[0].get("thin_output"), "word_count": results[0].get("word_count")}
-        agent_outputs["bear"] = {"output": results[1]["bear_case"], "model": results[1]["model_used"], "prompt": results[1]["prompt_sent"], "thin_output": results[1].get("thin_output"), "word_count": results[1].get("word_count")}
+            pipeline_state["bull_case"] = results[0]["bull_case"]
+            pipeline_state["bear_case"] = results[1]["bear_case"]
+            agent_outputs["bull"] = {"output": results[0]["bull_case"], "model": results[0]["model_used"], "prompt": results[0]["prompt_sent"], "thin_output": results[0].get("thin_output"), "word_count": results[0].get("word_count")}
+            agent_outputs["bear"] = {"output": results[1]["bear_case"], "model": results[1]["model_used"], "prompt": results[1]["prompt_sent"], "thin_output": results[1].get("thin_output"), "word_count": results[1].get("word_count")}
 
-        st.session_state["m02_pipeline_state"] = pipeline_state
-        st.session_state["m02_agent_outputs"] = agent_outputs
+            st.session_state["m02_pipeline_state"] = pipeline_state
+            st.session_state["m02_agent_outputs"] = agent_outputs
+
         st.session_state["m02_phase"] = "synthesizing"
         st.rerun()
         return
