@@ -4,15 +4,16 @@ from groq import Groq
 
 from utils.base import BaseProvider, FallbackTrigger
 
-# Groq models in fallback order. Free-tier limits as of June 2026.
-# llama-4-scout-17b removed June 2026 — deprecated by Groq, decommissioned July 17 2026.
-# Replaced with qwen3.6-27b per Groq's own recommendation.
-TIER1_MODEL = "llama-3.3-70b-versatile"  # 12K TPM, 100K TPD — best quality
-TIER2_MODEL = "qwen/qwen3.6-27b"         # Groq-recommended replacement for Llama 4 Scout
-TIER3_MODEL = "qwen/qwen3-32b"           # 6K TPM,  500K TPD — strong instruction following
-TIER4_MODEL = "openai/gpt-oss-120b"      # 8K TPM,  200K TPD — large model
-TIER5_MODEL = "llama-3.1-8b-instant"     # 6K TPM,  500K TPD — fast, high RPD
-TIER6_MODEL = "openai/gpt-oss-20b"       # smaller/faster sibling to 120B — last resort
+# Groq models in fallback order. Free-tier limits as of July 2026.
+# llama-4-scout-17b removed June 2026 — deprecated, decommissioned July 17 2026.
+# llama-3.3-70b-versatile removed July 2, 2026 — deprecated by Groq, decommissioning Aug 16 2026.
+#   Groq-recommended replacements: qwen3.6-27b or gpt-oss-120b (both already in chain).
+#   qwen3.6-27b promoted to TIER1 as direct replacement.
+TIER1_MODEL = "qwen/qwen3.6-27b"      # Groq-recommended replacement for llama-3.3-70b
+TIER2_MODEL = "qwen/qwen3-32b"        # 6K TPM,  500K TPD — strong instruction following
+TIER3_MODEL = "openai/gpt-oss-120b"   # 8K TPM,  200K TPD — large model
+TIER4_MODEL = "llama-3.1-8b-instant"  # 6K TPM,  500K TPD — fast, high RPD
+TIER5_MODEL = "openai/gpt-oss-20b"    # smaller/faster sibling to 120B — last resort
 
 
 class GroqProvider(BaseProvider):
