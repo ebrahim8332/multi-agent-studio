@@ -7,6 +7,8 @@ Phase state machine (m02_phase in session_state):
   error             — Resolver or Data Agent halted; plain-English error shown
   data_checkpoint   — Checkpoint 1: data summary shown, user clicks Continue
   analysts_running  — Fundamentals + Business Quality + Risk run in parallel
+  fact_checking     — Fact Checker verifies Fundamentals/Risk claims against
+                       data_bundle; auto-proceeds if clean, checkpoint if not
   advocates_running — Bull + Bear run in parallel
   synthesizing      — Synthesizer runs
   complete          — Checkpoint 2: charts, evidence panel, full note, download
@@ -35,7 +37,7 @@ from utils.model_client import get_chain, APPROX_PRICING, SESSION_LOCK_KEY
 from utils.doc_builder import build_stock_research_doc
 from modules.m02_stock.agents import (
     run_resolver, run_data_agent, run_fundamentals_analyst, run_quality_analyst,
-    run_risk_analyst, run_bull_advocate, run_bear_advocate, run_synthesizer,
+    run_risk_analyst, run_fact_checker, run_bull_advocate, run_bear_advocate, run_synthesizer,
 )
 
 TIME_HORIZON_OPTIONS = [
@@ -47,6 +49,7 @@ TIME_HORIZON_OPTIONS = [
 STATUS_WAITING  = "⬜ Waiting"
 STATUS_RUNNING  = "🔄 Running..."
 STATUS_COMPLETE = "✅ Complete"
+STATUS_FLAGGED  = "⚠️ Flagged"
 STATUS_FAILED   = "❌ Failed"
 
 AGENTS = [
@@ -55,9 +58,10 @@ AGENTS = [
     ("fundamentals", "Agent 3: Fundamentals Analyst",    "Revenue, margins, and valuation vs peers"),
     ("quality",      "Agent 4: Business Quality Analyst","Moat, brand, and management signals"),
     ("risk",         "Agent 5: Risk Analyst",            "Five risk categories from tiered news and macro context"),
-    ("bull",         "Agent 6: Bull Advocate",           "Strongest case to own the stock"),
-    ("bear",         "Agent 7: Bear Advocate",           "Strongest case against owning it"),
-    ("synthesizer",  "Agent 8: Synthesizer",             "Weighs the debate and issues the rating"),
+    ("fact_checker", "Agent 6: Fact Checker",            "Verifies analyst claims against source data — not another model's opinion"),
+    ("bull",         "Agent 7: Bull Advocate",           "Strongest case to own the stock"),
+    ("bear",         "Agent 8: Bear Advocate",           "Strongest case against owning it"),
+    ("synthesizer",  "Agent 9: Synthesizer",             "Weighs the debate and issues the rating"),
 ]
 
 _STATE_KEYS = [
@@ -116,6 +120,8 @@ def _agent_panel(placeholder, label: str, description: str, status: str,
                     st.success(header)
                 elif status == STATUS_FAILED:
                     st.error(header)
+                elif status == STATUS_FLAGGED:
+                    st.warning(header)
                 else:
                     st.info(header)
                 if running:
@@ -332,14 +338,17 @@ def _show_run_summary() -> None:
 
 def render() -> None:
     st.title("📊 Stock Analyser")
-    st.caption("Eight agents research, debate, and rate a stock from real financial data.")
+    st.caption("Nine agents research, verify, debate, and rate a stock from real financial data.")
     st.markdown(
         "This module analyses a real ticker using **yfinance** for financials, **Tavily** "
         "for news and events, and **Exa** for qualitative research. If required data is "
         "missing, the pipeline stops and tells you exactly what's missing — it never "
-        "guesses. Two new patterns beyond Module 1:\n\n"
+        "guesses. Three new patterns beyond Module 1:\n\n"
         "- **Fan-out / merge** — three analysts run at the same time from the same data, "
         "then a fourth stage runs two more agents arguing opposite sides\n"
+        "- **Independent fact-checking** — a dedicated agent re-checks specific numeric "
+        "claims against the source data itself, not another model's opinion, before the "
+        "debate stage ever sees them\n"
         "- **Evidence-grounded confidence** — a data quality score computed from objective "
         "signals directly controls how confident the final rating is allowed to sound"
     )
@@ -349,9 +358,33 @@ def render() -> None:
             "A chat AI answers a stock question from memory, with no live data, no source "
             "verification, and no way to say 'I don't know.' This pipeline pulls real "
             "financials right now, halts outright if the data is too thin to analyse "
-            "honestly, and has two agents argue opposite sides before a third weighs the "
+            "honestly, independently re-checks specific numbers before they can influence "
+            "the debate, and has two agents argue opposite sides before a third weighs the "
             "debate. The confidence rating is capped by an objective data quality score, "
             "not just how convincing the argument sounds."
+        )
+
+    with st.expander("🔍 Architecture note: Independent fact-checking", expanded=False):
+        st.markdown(
+            "The Fact Checker does not ask another model whether the Fundamentals and Risk "
+            "Analysts' numbers 'sound right' — that would just be one model's opinion "
+            "checking another's. Instead, it extracts each specific numeric claim into a "
+            "structured record, then Python compares it directly against `data_bundle` — "
+            "the exact numbers already pulled from yfinance:\n\n"
+            "```python\n"
+            "# The LLM only extracts WHAT was claimed. It never sees the true value.\n"
+            "claimed = extract_claims(fundamentals_text, risk_text)\n\n"
+            "# Python does the actual verification — an exact numeric comparison,\n"
+            "# not a model's guess about whether something looks plausible.\n"
+            "for claim in claimed:\n"
+            "    true_value = data_bundle[claim.metric]\n"
+            "    verdict = 'Confirmed' if abs(claim.value - true_value) <= tolerance else 'Mismatch'\n"
+            "```\n\n"
+            "If nothing is wrong, this becomes a visible confirmation message — proof the "
+            "numbers were actually checked, not just a claim that they were. If something "
+            "doesn't match, the pipeline stops and shows you exactly which claim, what was "
+            "claimed, and what the data actually says, before Bull, Bear, or the Synthesizer "
+            "ever treat it as ground truth."
         )
 
     with st.expander("🧩 Architecture note: Fan-out / merge", expanded=False):
@@ -377,13 +410,18 @@ def render() -> None:
             "2. **Adversarial synthesis** — Bull and Bear argue opposing cases; a Synthesizer weighs both.\n"
             "3. **Conditional routing** — the pipeline halts on an invalid ticker or incomplete data "
             "instead of producing a confident-sounding wrong answer.\n"
-            "4. **Structured vs unstructured data** — the Data Agent is deterministic API calls; the "
+            "4. **Independent verification, not another opinion** — the Fact Checker verifies specific "
+            "numbers against source data in Python, not by asking a model if a claim sounds right. "
+            "Checks and balances in a multi-agent system need a real ground truth to check against, "
+            "not just a second AI's agreement.\n"
+            "5. **Structured vs unstructured data** — the Data Agent is deterministic API calls; the "
             "analyst agents are LLM reasoning. Keeping these separate is a design choice, not a shortcut.\n"
-            "5. **Epistemological honesty** — 'What This Analysis Cannot Know' states the system's real "
+            "6. **Epistemological honesty** — 'What This Analysis Cannot Know' states the system's real "
             "limits, not a legal disclaimer.\n"
-            "6. **Evidence-grounded confidence** — the data quality score is computed from objective "
-            "signals and caps what confidence level the Synthesizer is allowed to issue.\n"
-            "7. **Trend over point estimates** — one year's revenue number means little next to three "
+            "7. **Evidence-grounded confidence** — the data quality score is computed from objective "
+            "signals and caps what confidence level the Synthesizer is allowed to issue. A fact-check "
+            "mismatch a human overrides caps it the same way.\n"
+            "8. **Trend over point estimates** — one year's revenue number means little next to three "
             "years of direction. The Fundamentals Analyst is told to describe direction, not just numbers."
         )
 
@@ -446,6 +484,8 @@ def render() -> None:
     fundamentals_ph = _analyst_cols[0].empty()
     quality_ph      = _analyst_cols[1].empty()
     risk_ph         = _analyst_cols[2].empty()
+    fact_checker_ph  = st.empty()
+    fact_check_gate_ph = st.empty()
     _advocate_cols = st.columns(2)
     bull_ph = _advocate_cols[0].empty()
     bear_ph = _advocate_cols[1].empty()
@@ -454,8 +494,8 @@ def render() -> None:
 
     ph = {
         "resolver": resolver_ph, "data_agent": data_ph, "fundamentals": fundamentals_ph,
-        "quality": quality_ph, "risk": risk_ph, "bull": bull_ph, "bear": bear_ph,
-        "synthesizer": synth_ph,
+        "quality": quality_ph, "risk": risk_ph, "fact_checker": fact_checker_ph,
+        "bull": bull_ph, "bear": bear_ph, "synthesizer": synth_ph,
     }
 
     if run_clicked and acknowledged and raw_input.strip():
@@ -624,7 +664,7 @@ def render() -> None:
 
         st.session_state["m02_pipeline_state"] = pipeline_state
         st.session_state["m02_agent_outputs"] = agent_outputs
-        st.session_state["m02_phase"] = "advocates_running"
+        st.session_state["m02_phase"] = "fact_checking"
         st.rerun()
         return
 
@@ -643,12 +683,124 @@ def render() -> None:
                      model=out.get("model", ""), prompt=out.get("prompt", []), thin_warning=thin_warning)
 
     # ══════════════════════════════════════════════════════════════════════════
+    # PHASE: fact_checking
+    # ══════════════════════════════════════════════════════════════════════════
+    if phase == "fact_checking":
+        # Only run once. If a mismatch is found, the checkpoint below keeps
+        # phase="fact_checking" across reruns while the user decides — this
+        # guard stops the Fact Checker (and its LLM call) from re-running on
+        # every one of those reruns.
+        if "fact_check_summary" not in pipeline_state:
+            _agent_panel(fact_checker_ph, "Agent 6: Fact Checker",
+                         "Verifying analyst claims against source data...", STATUS_RUNNING, running=True)
+            for name, label, desc in AGENTS[6:]:
+                _agent_panel(ph[name], label, desc, STATUS_WAITING)
+
+            state_for_fc = {"data_bundle": db, **pipeline_state}
+            chain = get_chain(st.session_state, call_log_key=M02_CALL_LOG_KEY)
+            with st.spinner("Cross-checking numeric claims against yfinance data..."):
+                try:
+                    fc_result = run_fact_checker(state_for_fc, chain)
+                except Exception as e:
+                    st.error(f"Fact Checker failed to run: {e}. Try Start Over.")
+                    _agent_panel(fact_checker_ph, "Agent 6: Fact Checker", "", STATUS_FAILED)
+                    return
+
+            pipeline_state["fact_check_claims"] = fc_result["fact_check_claims"]
+            pipeline_state["fact_check_summary"] = fc_result["fact_check_summary"]
+            pipeline_state["fact_check_flagged"] = fc_result["fact_check_flagged"]
+            agent_outputs["fact_checker"] = {
+                "output": fc_result["fact_check_summary"], "model": fc_result["model_used"],
+                "prompt": fc_result["prompt_sent"],
+            }
+            st.session_state["m02_pipeline_state"] = pipeline_state
+            st.session_state["m02_agent_outputs"] = agent_outputs
+
+            if fc_result["fact_check_error"]:
+                st.error(
+                    "Fact Checker failed to run — claims from Fundamentals and Risk were not "
+                    "verified. This is a model/formatting failure, not a clean pass. Try Start Over."
+                )
+                _agent_panel(fact_checker_ph, "Agent 6: Fact Checker", "Failed to run", STATUS_FAILED,
+                             prompt=fc_result["prompt_sent"])
+                return
+
+            if not fc_result["fact_check_flagged"]:
+                # Clean pass — the confidence-building signal: proof the
+                # numbers were actually checked, not just asserted.
+                _agent_panel(fact_checker_ph, "Agent 6: Fact Checker", "Verified analyst claims against source data",
+                             STATUS_COMPLETE, output=fc_result["fact_check_summary"], model=fc_result["model_used"],
+                             prompt=fc_result["prompt_sent"], expanded=True)
+                st.success(f"✅ {fc_result['fact_check_summary']}")
+                st.session_state["m02_phase"] = "advocates_running"
+                st.rerun()
+                return
+
+            # Flagged — render straight from the result just computed rather
+            # than forcing another rerun to pick up what we already have.
+            claims = fc_result["fact_check_claims"]
+            summary = fc_result["fact_check_summary"]
+            model_used = fc_result["model_used"]
+            prompt_sent = fc_result["prompt_sent"]
+        else:
+            claims = pipeline_state.get("fact_check_claims", [])
+            summary = pipeline_state.get("fact_check_summary", "")
+            out = agent_outputs.get("fact_checker", {})
+            model_used = out.get("model", "")
+            prompt_sent = out.get("prompt", [])
+
+        _agent_panel(fact_checker_ph, "Agent 6: Fact Checker", "Mismatch found — awaiting your decision",
+                     STATUS_FLAGGED, output=summary, model=model_used, prompt=prompt_sent, expanded=True)
+
+        with fact_check_gate_ph.container():
+            st.warning(f"⚠️ {summary}")
+            for c in claims:
+                if c["verdict"] != "Mismatch":
+                    continue
+                true_val = c.get("true_value")
+                true_str = f"{true_val:.2f}" if isinstance(true_val, (int, float)) else "n/a"
+                st.markdown(
+                    f"**{c['source_agent']}** claimed **{c['metric']}** = `{c['claimed_value']}` — "
+                    f"actual value is `{true_str}`.\n\n> {c['claim_text']}"
+                )
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                if st.button("Proceed despite mismatch(es) →", type="primary", key="m02_factcheck_proceed_btn"):
+                    fact_check_gate_ph.empty()
+                    st.session_state["m02_phase"] = "advocates_running"
+                    st.rerun()
+            with col2:
+                if st.button("Start Over", key="m02_factcheck_stop_btn"):
+                    for key in _STATE_KEYS:
+                        st.session_state.pop(key, None)
+                    st.rerun()
+            st.caption(
+                "Proceeding forces the final rating's confidence to Low — a fact-check "
+                "mismatch overridden by a human is not a High-confidence result."
+            )
+
+        for name, label, desc in AGENTS[6:]:
+            _agent_panel(ph[name], label, desc, STATUS_WAITING)
+        return
+
+    # From here on, the Fact Checker has completed (clean or overridden).
+    fc_out = agent_outputs.get("fact_checker", {})
+    fact_checker_label = (
+        "Mismatch found — proceeded anyway" if pipeline_state.get("fact_check_flagged")
+        else "Verified analyst claims against source data"
+    )
+    _agent_panel(fact_checker_ph, "Agent 6: Fact Checker", fact_checker_label,
+                 STATUS_FLAGGED if pipeline_state.get("fact_check_flagged") else STATUS_COMPLETE,
+                 output=fc_out.get("output", ""), model=fc_out.get("model", ""), prompt=fc_out.get("prompt", []))
+    fact_check_gate_ph.empty()
+
+    # ══════════════════════════════════════════════════════════════════════════
     # PHASE: advocates_running  (fan-out / merge, 2 workers)
     # ══════════════════════════════════════════════════════════════════════════
     if phase == "advocates_running":
-        _agent_panel(bull_ph, "Agent 6: Bull Advocate", "Building the strongest case to own the stock...", STATUS_RUNNING, running=True)
-        _agent_panel(bear_ph, "Agent 7: Bear Advocate", "Building the strongest case against owning it...", STATUS_RUNNING, running=True)
-        _agent_panel(synth_ph, "Agent 8: Synthesizer", "Weighs the debate and issues the rating", STATUS_WAITING)
+        _agent_panel(bull_ph, "Agent 7: Bull Advocate", "Building the strongest case to own the stock...", STATUS_RUNNING, running=True)
+        _agent_panel(bear_ph, "Agent 8: Bear Advocate", "Building the strongest case against owning it...", STATUS_RUNNING, running=True)
+        _agent_panel(synth_ph, "Agent 9: Synthesizer", "Weighs the debate and issues the rating", STATUS_WAITING)
 
         state_for_advocates = {"data_bundle": db, "time_horizon": time_horizon, **pipeline_state}
         with st.spinner("Running Bull and Bear advocates simultaneously..."):
@@ -659,8 +811,8 @@ def render() -> None:
 
         if any(r is None for r in results):
             st.error("Bull or Bear advocate failed. Try Start Over.")
-            _agent_panel(bull_ph, "Agent 6: Bull Advocate", "", STATUS_FAILED)
-            _agent_panel(bear_ph, "Agent 7: Bear Advocate", "", STATUS_FAILED)
+            _agent_panel(bull_ph, "Agent 7: Bull Advocate", "", STATUS_FAILED)
+            _agent_panel(bear_ph, "Agent 8: Bear Advocate", "", STATUS_FAILED)
             return
 
         pipeline_state["bull_case"] = results[0]["bull_case"]
@@ -676,8 +828,8 @@ def render() -> None:
 
     # From here on, Bull and Bear have completed.
     for key, placeholder, (label, desc) in (
-        ("bull", bull_ph, ("Agent 6: Bull Advocate", "Strongest case to own the stock")),
-        ("bear", bear_ph, ("Agent 7: Bear Advocate", "Strongest case against owning it")),
+        ("bull", bull_ph, ("Agent 7: Bull Advocate", "Strongest case to own the stock")),
+        ("bear", bear_ph, ("Agent 8: Bear Advocate", "Strongest case against owning it")),
     ):
         out = agent_outputs.get(key, {})
         thin_warning = (
@@ -691,7 +843,7 @@ def render() -> None:
     # PHASE: synthesizing
     # ══════════════════════════════════════════════════════════════════════════
     if phase == "synthesizing":
-        _agent_panel(synth_ph, "Agent 8: Synthesizer", "Weighing the debate and issuing a rating...", STATUS_RUNNING, running=True)
+        _agent_panel(synth_ph, "Agent 9: Synthesizer", "Weighing the debate and issuing a rating...", STATUS_RUNNING, running=True)
 
         state_for_synth = {"data_bundle": db, "time_horizon": time_horizon, **pipeline_state}
         chain = get_chain(st.session_state, call_log_key=M02_CALL_LOG_KEY)
@@ -700,7 +852,7 @@ def render() -> None:
                 result = run_synthesizer(state_for_synth, chain)
         except Exception as e:
             st.error(f"Synthesizer failed: {e}")
-            _agent_panel(synth_ph, "Agent 8: Synthesizer", "", STATUS_FAILED)
+            _agent_panel(synth_ph, "Agent 9: Synthesizer", "", STATUS_FAILED)
             return
 
         if result.get("parse_error"):
@@ -712,7 +864,7 @@ def render() -> None:
                 "This is a model/formatting failure, not a genuine low-confidence "
                 "rating. Try Start Over — a retry often succeeds."
             )
-            _agent_panel(synth_ph, "Agent 8: Synthesizer", "Response failed to parse", STATUS_FAILED,
+            _agent_panel(synth_ph, "Agent 9: Synthesizer", "Response failed to parse", STATUS_FAILED,
                          prompt=result.get("prompt_sent", []))
             return
 
@@ -730,7 +882,7 @@ def render() -> None:
     # ══════════════════════════════════════════════════════════════════════════
     if phase == "complete":
         synth_out = agent_outputs.get("synthesizer", {})
-        _agent_panel(synth_ph, "Agent 8: Synthesizer", "Weighs the debate and issues the rating",
+        _agent_panel(synth_ph, "Agent 9: Synthesizer", "Weighs the debate and issues the rating",
                      STATUS_COMPLETE, output=synth_out.get("output", ""), model=synth_out.get("model", ""),
                      prompt=synth_out.get("prompt", []))
 

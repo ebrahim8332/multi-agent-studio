@@ -10,12 +10,15 @@ model. The graph below documents the same flow the UI actually drives.
 
 Graph structure:
     resolver -> data_agent -> [fundamentals, quality, risk] (parallel)
-             -> [bull, bear] (parallel) -> synthesizer -> END
+             -> fact_checker -> [bull, bear] (parallel) -> synthesizer -> END
 
-Conditional routing happens at two points, both enforced in agents.py, not
-here: the Resolver halts on an invalid ticker, and the Data Agent halts on
-missing required fields. Either halt stops the graph before it reaches the
-fan-out stage — no LLM agent ever runs on unresolved or incomplete data.
+Conditional routing happens at three points, all enforced in agents.py, not
+here: the Resolver halts on an invalid ticker, the Data Agent halts on
+missing required fields, and the Fact Checker halts (pending human decision)
+if a numeric claim from Fundamentals or Risk doesn't match data_bundle. The
+first two stop the graph before any LLM agent runs on unresolved or
+incomplete data; the third stops it before Bull/Bear/Synthesizer treat an
+unverified claim as ground truth.
 """
 
 from typing import TypedDict
@@ -28,6 +31,7 @@ from modules.m02_stock.agents import (
     run_fundamentals_analyst,
     run_quality_analyst,
     run_risk_analyst,
+    run_fact_checker,
     run_bull_advocate,
     run_bear_advocate,
     run_synthesizer,
@@ -45,6 +49,9 @@ class StockState(TypedDict):
     fundamentals_analysis: str
     quality_analysis: str
     risk_analysis: str
+    fact_check_claims: list
+    fact_check_summary: str
+    fact_check_flagged: bool
     bull_case: str
     bear_case: str
     research_note: str
@@ -99,6 +106,19 @@ def build_graph(chain):
             "risk_analysis":         r_result["risk_analysis"],
         }
 
+    def fact_checker_node(state: StockState) -> dict:
+        """Extracts numeric claims from Fundamentals/Risk and verifies them
+        against data_bundle in Python. The UI layer is what actually pauses
+        on fact_check_flagged=True — this node just produces the verdict."""
+        if state.get("halted"):
+            return {}
+        result = run_fact_checker(state, chain)
+        return {
+            "fact_check_claims":  result["fact_check_claims"],
+            "fact_check_summary": result["fact_check_summary"],
+            "fact_check_flagged": result["fact_check_flagged"],
+        }
+
     def fan_out_advocates_node(state: StockState) -> dict:
         """Same fan-out / merge pattern, two workers this time."""
         if state.get("halted"):
@@ -129,15 +149,17 @@ def build_graph(chain):
     graph.add_node("resolver",         resolver_node)
     graph.add_node("data_agent",       data_agent_node)
     graph.add_node("analysts",         fan_out_analysts_node)
+    graph.add_node("fact_checker",     fact_checker_node)
     graph.add_node("advocates",        fan_out_advocates_node)
     graph.add_node("synthesizer",      synthesizer_node)
 
     graph.set_entry_point("resolver")
-    graph.add_edge("resolver",    "data_agent")
-    graph.add_edge("data_agent",  "analysts")
-    graph.add_edge("analysts",    "advocates")
-    graph.add_edge("advocates",   "synthesizer")
-    graph.add_edge("synthesizer", END)
+    graph.add_edge("resolver",     "data_agent")
+    graph.add_edge("data_agent",   "analysts")
+    graph.add_edge("analysts",     "fact_checker")
+    graph.add_edge("fact_checker", "advocates")
+    graph.add_edge("advocates",    "synthesizer")
+    graph.add_edge("synthesizer",  END)
 
     return graph.compile()
 
@@ -155,6 +177,9 @@ def get_initial_state(raw_input: str, time_horizon: str = "Medium-term (1-3 year
         fundamentals_analysis="",
         quality_analysis="",
         risk_analysis="",
+        fact_check_claims=[],
+        fact_check_summary="",
+        fact_check_flagged=False,
         bull_case="",
         bear_case="",
         research_note="",

@@ -1,20 +1,32 @@
 """
 Agent functions for the Stock Analyser module (M02).
 
-Eight agents:
+Nine agents:
   1. Resolver              — no LLM, validates the ticker via yfinance
   2. Data Agent             — no LLM, pulls yfinance + Tavily data, runs the
                                completeness gate, computes the data quality score
   3. Fundamentals Analyst   — LLM, revenue/margin/valuation trends
   4. Business Quality Analyst — LLM, moat/brand via Exa qualitative search
   5. Risk Analyst           — LLM, five risk categories from tiered news + macro
-  6. Bull Advocate          — LLM, strongest case to own the stock
-  7. Bear Advocate          — LLM, strongest case against owning it
-  8. Synthesizer            — LLM, weighs Bull vs Bear, issues rating + confidence
+  6. Fact Checker           — LLM extracts claims, Python verifies them against
+                               data_bundle — not another model's opinion
+  7. Bull Advocate          — LLM, strongest case to own the stock
+  8. Bear Advocate          — LLM, strongest case against owning it
+  9. Synthesizer            — LLM, weighs Bull vs Bear, issues rating + confidence
 
 Agents 1 and 2 have no LLM calls — they are pure data lookups and never
 fabricate a number. If yfinance is missing a required field, Agent 2 halts
 the pipeline before any LLM agent runs (see run_data_agent / REQUIRED_FIELDS).
+
+Agent 6 (Fact Checker) exists because of a specific failure mode: Fundamentals
+and Risk Analyst are the two agents most likely to quote a specific number
+badly (transposed digit, wrong direction, wrong period), and any such error
+propagates uncorrected into Bull, Bear, and the Synthesizer, which all treat
+the analyst text as ground truth. Unlike a typical LLM fact-checker (which
+checks claims against fuzzy search snippets), this one checks claims against
+data_bundle directly — the same numbers already fetched from yfinance — so
+verification is an exact numeric comparison in Python, not another model's
+guess about whether something sounds right.
 
 A note on sector names: yfinance's `.info["sector"]` uses Yahoo Finance's own
 taxonomy, not GICS. Confirmed against live tickers before writing this file:
@@ -446,6 +458,27 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
         analyst_count = sum(analyst_dist.values())
     analyst_count = int(analyst_count) if not _is_missing(analyst_count) else 0
 
+    # ── Trend data, fetched early ────────────────────────────────────────────
+    # Needed before the required-fields check below because debt_to_equity is
+    # sourced from it, not from yfinance's info["debtToEquity"] — see note.
+    trend_data = _fetch_trend_data(t)
+
+    # yfinance's info["debtToEquity"] uses an internal Yahoo scaling that does
+    # not match the standard ratio convention (confirmed directly against the
+    # API: AAPL returns 79.5 from this field, while Total Debt / Stockholders
+    # Equity from the balance sheet is 1.34 -- a >50x difference, not rounding
+    # noise). Preferring the balance-sheet-computed ratio here keeps this one
+    # number internally consistent with the identical calculation already
+    # used for every year in trend_data, so the model is never shown two
+    # different "debt-to-equity" figures for the same company in the same
+    # prompt. Found by the Fact Checker flagging a "wrong" analyst claim that
+    # was actually correct against the trend table and only wrong against
+    # this raw field -- falls back to the raw field only if the balance
+    # sheet computation is unavailable.
+    debt_to_equity = trend_data[-1]["debt_to_equity"] if trend_data else None
+    if debt_to_equity is None:
+        debt_to_equity = _safe_float(info.get("debtToEquity"))
+
     # ── Required fields — first missing one halts the pipeline ──────────────
     required_checks = [
         ("company_name", "Company name", company_name),
@@ -460,7 +493,7 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
         ("operating_margin", "Operating margin", info.get("operatingMargins")),
         ("net_margin", "Net margin", info.get("profitMargins")),
         ("free_cash_flow", "Free cash flow", info.get("freeCashflow")),
-        ("debt_to_equity", "Debt-to-equity ratio", info.get("debtToEquity")),
+        ("debt_to_equity", "Debt-to-equity ratio", debt_to_equity),
         ("return_on_equity", "Return on equity", info.get("returnOnEquity")),
         ("fifty_two_week_high", "52-week high", info.get("fiftyTwoWeekHigh")),
         ("fifty_two_week_low", "52-week low", info.get("fiftyTwoWeekLow")),
@@ -508,8 +541,7 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
     except Exception:
         institutional_holders = []
 
-    # ── Trend data + earnings history ────────────────────────────────────────
-    trend_data = _fetch_trend_data(t)
+    # ── Earnings history (trend_data was already fetched above) ─────────────
     earnings_history, most_recent_earnings_date = _fetch_earnings_history(t)
 
     filing_age_days = None
@@ -566,7 +598,7 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
         "operating_margin": _safe_float(info.get("operatingMargins")),
         "net_margin": _safe_float(info.get("profitMargins")),
         "free_cash_flow": _safe_float(info.get("freeCashflow")),
-        "debt_to_equity": _safe_float(info.get("debtToEquity")),
+        "debt_to_equity": debt_to_equity,
         "return_on_equity": _safe_float(info.get("returnOnEquity")),
         "fifty_two_week_high": _safe_float(info.get("fiftyTwoWeekHigh")),
         "fifty_two_week_low": _safe_float(info.get("fiftyTwoWeekLow")),
@@ -899,7 +931,247 @@ def run_risk_analyst(state: dict, chain) -> dict:
     }
 
 
-# ── Agent 6: Bull Advocate ─────────────────────────────────────────────────────
+# ── Agent 6: Fact Checker ──────────────────────────────────────────────────────
+
+# Metrics with a structured ground-truth value in data_bundle worth checking.
+# is_percent=True means the true value is stored as a decimal fraction (0.44)
+# but analysts write it as a percentage (44%) — comparison scales accordingly.
+# Scoped to current/TTM values only, not historical trend years or specific
+# peer figures — those would need a claim schema disambiguating which year or
+# which peer, and current-period numbers are what a reader is most likely to
+# open a live finance site and check right now. Trend/peer verification would
+# be a reasonable v2, not attempted here.
+VERIFIABLE_METRICS = {
+    "gross_margin":           (True,  "Gross margin"),
+    "operating_margin":       (True,  "Operating margin"),
+    "net_margin":              (True,  "Net margin"),
+    "revenue_growth":          (True,  "Revenue growth year-over-year"),
+    "return_on_equity":        (True,  "Return on equity (ROE)"),
+    "short_percent_of_float":  (True,  "Short interest as % of float"),
+    "dividend_yield":          (True,  "Dividend yield"),
+    "debt_to_equity":          (False, "Debt-to-equity ratio"),
+    "pe_value":                (False, "P/E ratio (trailing or forward)"),
+    "beta":                    (False, "Beta"),
+    "price_to_book":           (False, "Price-to-book ratio"),
+    "eps_trailing":            (False, "Trailing EPS"),
+    "free_cash_flow":          (False, "Free cash flow (in dollars)"),
+    "revenue_ttm":             (False, "Revenue, trailing twelve months (in dollars)"),
+    "market_cap":              (False, "Market capitalization (in dollars)"),
+    "current_price":           (False, "Current share price"),
+    "fifty_two_week_high":     (False, "52-week high price"),
+    "fifty_two_week_low":      (False, "52-week low price"),
+    "analyst_mean_target":     (False, "Analyst mean price target"),
+}
+
+FACT_CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source_agent":  {"type": "string", "enum": ["Fundamentals Analyst", "Risk Analyst"]},
+                    "claim_text":    {"type": "string"},
+                    "metric":        {"type": "string", "enum": list(VERIFIABLE_METRICS.keys())},
+                    "claimed_value": {"type": "string"},
+                },
+                "required": ["source_agent", "claim_text", "metric", "claimed_value"],
+            },
+        },
+    },
+    "required": ["claims"],
+}
+
+
+def _get_true_value(db: dict, metric: str):
+    """Ground-truth lookup for a verifiable metric, checking both the top
+    level of data_bundle and the supplementary dict."""
+    if metric in db and db[metric] is not None:
+        return db[metric]
+    return db.get("supplementary", {}).get(metric)
+
+
+def _parse_claimed_number(raw: str) -> float | None:
+    """Parses a claim like '44%', '$451.4B', '$451.44 billion', '36.7', or
+    '-0.18' into a plain float. Returns None if it cannot be parsed — that
+    becomes 'Could not verify', not a false mismatch."""
+    if not raw:
+        return None
+    cleaned = raw.strip().replace(",", "").replace("$", "").replace("%", "")
+    lowered = cleaned.lower()
+    multiplier = 1.0
+    for word, mult in (("trillion", 1e12), ("billion", 1e9), ("million", 1e6), ("thousand", 1e3)):
+        if lowered.endswith(word):
+            multiplier, cleaned = mult, cleaned[: -len(word)].strip()
+            break
+    else:
+        if cleaned.upper().endswith("T"):
+            multiplier, cleaned = 1e12, cleaned[:-1]
+        elif cleaned.upper().endswith("B"):
+            multiplier, cleaned = 1e9, cleaned[:-1]
+        elif cleaned.upper().endswith("M"):
+            multiplier, cleaned = 1e6, cleaned[:-1]
+        elif cleaned.upper().endswith("K"):
+            multiplier, cleaned = 1e3, cleaned[:-1]
+    try:
+        return float(cleaned) * multiplier
+    except (TypeError, ValueError):
+        return None
+
+
+def _verify_claim(db: dict, metric: str, claimed_value_str: str) -> dict:
+    """
+    Compares one claimed numeric value against the real data_bundle value.
+    The LLM never sees the true value before extraction — this is a real
+    independent check, not the model grading its own homework.
+
+    Tolerance is deliberately generous: 1.5 percentage points for
+    percent-type metrics, or 5% relative (minimum 0.5 absolute) for raw
+    values — enough room for reasonable rounding ("$451.4B" -> "$450B" is
+    not a factual error), tight enough to catch a genuinely wrong number.
+    """
+    if metric not in VERIFIABLE_METRICS:
+        return {"verdict": "Could not verify", "true_value": None, "reason": "not a recognised metric"}
+
+    is_percent, _ = VERIFIABLE_METRICS[metric]
+    true_raw = _get_true_value(db, metric)
+    if true_raw is None:
+        return {"verdict": "Could not verify", "true_value": None, "reason": "no source value available"}
+
+    claimed = _parse_claimed_number(claimed_value_str)
+    if claimed is None:
+        return {"verdict": "Could not verify", "true_value": true_raw, "reason": "could not parse claimed value"}
+
+    true_value = true_raw * 100 if is_percent else true_raw
+    tolerance = 1.5 if is_percent else max(abs(true_value) * 0.05, 0.5)
+    diff = abs(claimed - true_value)
+
+    if diff <= tolerance:
+        return {"verdict": "Confirmed", "true_value": true_value, "reason": ""}
+    unit = "%" if is_percent else ""
+    return {
+        "verdict": "Mismatch", "true_value": true_value,
+        "reason": f"claimed {claimed_value_str}, actual is {true_value:.2f}{unit}",
+    }
+
+
+def run_fact_checker(state: dict, chain) -> dict:
+    """
+    Extracts specific numeric claims from the Fundamentals and Risk Analysts'
+    text, then verifies each one in Python against data_bundle — the same
+    numbers already fetched from yfinance — instead of asking another model
+    whether the claim sounds plausible. Business Quality Analyst is excluded:
+    its claims are qualitative, grounded in Exa search text, not a structured
+    number with a ground truth to check against.
+
+    Returns: fact_check_claims (list), fact_check_summary (str),
+    fact_check_flagged (bool — True if any claim came back Mismatch),
+    fact_check_error (bool — True if the LLM call/parse itself failed, a
+    real failure distinct from "zero claims found"), model_used, prompt_sent
+    """
+    db = state["data_bundle"]
+    fundamentals_text = state.get("fundamentals_analysis", "")
+    risk_text = state.get("risk_analysis", "")
+
+    metric_list = "\n".join(f"- {key}: {label}" for key, (_, label) in VERIFIABLE_METRICS.items())
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a fact extraction assistant. You will be given two analyst "
+                "reports. Extract every specific numeric claim about the CURRENT or "
+                "most recent value of one of the metrics listed below. Do not extract "
+                "claims about metrics not on this list — those cannot be automatically "
+                "verified. Do not extract a trend description with no specific number "
+                "('margins improved') — there is nothing to check in that case.\n\n"
+                "Critical: only current-period values can be verified here, not "
+                "historical ones. When a sentence cites a change over time (e.g. "
+                "'debt-to-equity decreased from 2.61 to 1.34 since FY2022', 'ROE was "
+                "197% two years ago, now 141%'), extract ONLY the current/most recent "
+                "number (1.34, 141%) as the claim. Do not extract the older historical "
+                "figure — there is no current-period ground truth to check it against, "
+                "and flagging it as wrong would be a false alarm, not a real error.\n\n"
+                f"Recognised metrics:\n{metric_list}\n\n"
+                "For each claim found, report:\n"
+                "source_agent: 'Fundamentals Analyst' or 'Risk Analyst'\n"
+                "claim_text: the exact sentence or phrase making the claim\n"
+                "metric: the recognised metric key it refers to, exactly as listed above\n"
+                "claimed_value: the number as stated, with sign and unit if given "
+                "(e.g. '44.3%', '36.7', '$451.4B', '-0.18')\n\n"
+                "Extract every instance, including repeated mentions of the same "
+                "metric. Do not invent a claim that is not in the text."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Fundamentals Analyst report:\n{fundamentals_text}\n\n"
+                f"Risk Analyst report:\n{risk_text}\n\n"
+                "Extract every verifiable numeric claim."
+            ),
+        },
+    ]
+
+    model = ""
+    raw_claims = None
+    try:
+        response, model = chain.complete(
+            messages, timeout=90, max_tokens=3000, agent_label="Fact Checker", schema=FACT_CHECK_SCHEMA
+        )
+        raw_claims = json.loads(response).get("claims", [])
+    except Exception:
+        raw_claims = None
+
+    if raw_claims is None:
+        return {
+            "fact_check_claims": [],
+            "fact_check_summary": "Fact Checker failed to run. Claims were not verified.",
+            "fact_check_flagged": True,
+            "fact_check_error": True,
+            "model_used": model,
+            "prompt_sent": messages,
+        }
+
+    claims = []
+    for raw in raw_claims:
+        metric = str(raw.get("metric", ""))
+        claimed_value = str(raw.get("claimed_value", ""))
+        verdict = _verify_claim(db, metric, claimed_value)
+        claims.append({
+            "source_agent": str(raw.get("source_agent", "Unknown")),
+            "claim_text": str(raw.get("claim_text", "")),
+            "metric": metric,
+            "claimed_value": claimed_value,
+            **verdict,
+        })
+
+    confirmed = sum(1 for c in claims if c["verdict"] == "Confirmed")
+    mismatched = sum(1 for c in claims if c["verdict"] == "Mismatch")
+    unverifiable = sum(1 for c in claims if c["verdict"] == "Could not verify")
+    total = len(claims)
+
+    if total == 0:
+        summary = "No specific numeric claims were found to verify against source data."
+    elif mismatched == 0:
+        summary = f"Verified {confirmed} of {total} numeric claim(s) against source data — all confirmed."
+        if unverifiable:
+            summary += f" ({unverifiable} could not be automatically checked.)"
+    else:
+        summary = f"Checked {total} numeric claim(s): {confirmed} confirmed, {mismatched} mismatch(es) found."
+
+    return {
+        "fact_check_claims": claims,
+        "fact_check_summary": summary,
+        "fact_check_flagged": mismatched > 0,
+        "fact_check_error": False,
+        "model_used": model,
+        "prompt_sent": messages,
+    }
+
+
+# ── Agent 7: Bull Advocate ─────────────────────────────────────────────────────
 
 def run_bull_advocate(state: dict, chain) -> dict:
     """
@@ -951,7 +1223,7 @@ def run_bull_advocate(state: dict, chain) -> dict:
     }
 
 
-# ── Agent 7: Bear Advocate ─────────────────────────────────────────────────────
+# ── Agent 8: Bear Advocate ─────────────────────────────────────────────────────
 
 def run_bear_advocate(state: dict, chain) -> dict:
     """
@@ -1006,7 +1278,7 @@ def run_bear_advocate(state: dict, chain) -> dict:
     }
 
 
-# ── Agent 8: Synthesizer ──────────────────────────────────────────────────────
+# ── Agent 9: Synthesizer ──────────────────────────────────────────────────────
 
 SYNTHESIZER_SCHEMA = {
     "type": "object",
@@ -1092,13 +1364,26 @@ def run_synthesizer(state: dict, chain) -> dict:
         )
     )
 
+    fact_check_flagged = state.get("fact_check_flagged", False)
+    if fact_check_flagged:
+        fact_check_instruction = (
+            "\n\nThe Fact Checker found at least one numeric claim in the Fundamentals "
+            "or Risk Analyst reports that did not match the source data, and the user "
+            "chose to proceed anyway. You MUST set confidence to Low regardless of how "
+            "strong the analytical case appears, and confidence_explanation MUST state "
+            "that a fact-check mismatch was found and overridden by the user."
+        )
+    else:
+        fact_check_instruction = ""
+
     messages = [
         {
             "role": "system",
             "content": (
                 "You are the Synthesizer. Weigh the Bull and Bear cases and issue a "
                 "structured research note via the schema provided.\n\n"
-                f"{quality_instruction}\n\n"
+                f"{quality_instruction}"
+                f"{fact_check_instruction}\n\n"
                 "If the Bull and Bear cases are closely matched, default to Hold — do "
                 "not manufacture a conviction the evidence does not support.\n\n"
                 "Compare your rating to the Street consensus. street_comparison must "
@@ -1165,6 +1450,16 @@ def run_synthesizer(state: dict, chain) -> dict:
             data["confidence_explanation"] = (
                 f"Data quality score is {quality_score}/100 ({quality_label}), below the "
                 f"threshold for higher confidence. {data.get('confidence_explanation', '')}"
+            ).strip()
+
+    # Fact-check override — same principle: enforced in code, not trusted to
+    # the model to remember to apply it.
+    if fact_check_flagged:
+        confidence = "Low"
+        if "fact-check" not in data.get("confidence_explanation", "").lower() and "fact check" not in data.get("confidence_explanation", "").lower():
+            data["confidence_explanation"] = (
+                "A fact-check mismatch was found in an earlier analyst's numeric claim "
+                f"and overridden by the user. {data.get('confidence_explanation', '')}"
             ).strip()
 
     research_note = _build_research_note(db, state, data, confidence, time_horizon)
