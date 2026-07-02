@@ -404,10 +404,19 @@ def search_tavily_only(query: str, max_results: int = 5, days: int | None = None
 
 def search_exa_only(query: str, max_results: int = 5) -> list[dict]:
     """
-    Calls Exa directly, with full article text via search_and_contents()
-    (plain search() returns snippets too short for qualitative synthesis).
-    Exa is tuned for semantic/qualitative search — moat, brand, competitive
-    position — where Tavily is tuned for recency and news.
+    Calls Exa directly, with full article text via the `contents` option
+    on search() (plain search() with no contents option returns snippets
+    too short for qualitative synthesis). Exa is tuned for semantic,
+    qualitative search — moat, brand, competitive position — where Tavily
+    is tuned for recency and news.
+
+    Uses client.search(..., contents=...), not search_and_contents() or
+    use_autoprompt — both are gone from the installed exa-py version.
+    search_and_contents() logs a DeprecationWarning pointing at search(),
+    and use_autoprompt raises ValueError: Invalid option. Confirmed by
+    testing directly against the API, not just reading the changelog —
+    this silently returned zero results in every earlier run of this
+    module, since the caller here swallows exceptions and degrades to [].
     """
     import os
     try:
@@ -416,8 +425,8 @@ def search_exa_only(query: str, max_results: int = 5) -> list[dict]:
         if not api_key:
             return []
         client = Exa(api_key=api_key)
-        response = client.search_and_contents(
-            query, num_results=max_results, text={"max_characters": 2000}, use_autoprompt=True
+        response = client.search(
+            query, num_results=max_results, contents={"text": {"max_characters": 2000}}
         )
         return [
             {"title": r.title or "", "url": r.url or "", "content": (r.text or "")[:2000]}

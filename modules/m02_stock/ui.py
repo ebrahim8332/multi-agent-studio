@@ -80,21 +80,49 @@ M02_CALL_LOG_KEY = "m02_call_log"
 
 # ── Panel renderer ────────────────────────────────────────────────────────────
 
+_FAN_OUT_AGENT_LABELS = (
+    "Fundamentals Analyst", "Business Quality Analyst", "Risk Analyst",
+    "Bull Advocate", "Bear Advocate",
+)
+
+
 def _agent_panel(placeholder, label: str, description: str, status: str,
                   output: str = "", model: str = "", expanded: bool = False,
-                  running: bool = False, prompt: list = None) -> None:
+                  running: bool = False, prompt: list = None, bordered: bool = None) -> None:
     """Renders a single agent panel into a placeholder. Same conventions as
     Module 1's _agent_panel(): status line, running caption with the locked
-    model name, collapsible output, collapsible prompt viewer."""
+    model name, collapsible output, collapsible prompt viewer.
+
+    bordered: when True, wraps the header in a colored box — blue while
+    waiting/running, green when complete, red if failed — the same visual
+    Module 1 uses for the Tavily/Exa panels and Writer A/B. Auto-detected
+    from the label for the five agents that run as part of a fan-out
+    (Fundamentals, Business Quality, and Risk Analysts; Bull and Bear
+    Advocates), so every call site gets it without passing the flag."""
+    if bordered is None:
+        bordered = any(keyword in label for keyword in _FAN_OUT_AGENT_LABELS)
     with placeholder.container():
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.markdown(f"**{label}**  \n{description}")
-        with col2:
-            st.markdown(status)
-        if running:
-            locked_model = st.session_state.get("locked_model_name", "")
-            st.caption(f"⏳ Working... · {locked_model}" if locked_model else "⏳ Working...")
+        if bordered:
+            with st.container(border=True):
+                header = f"**{label}**  \n{description}  \n{status}"
+                if status == STATUS_COMPLETE:
+                    st.success(header)
+                elif status == STATUS_FAILED:
+                    st.error(header)
+                else:
+                    st.info(header)
+                if running:
+                    locked_model = st.session_state.get("locked_model_name", "")
+                    st.caption(f"⏳ Working... · {locked_model}" if locked_model else "⏳ Working...")
+        else:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown(f"**{label}**  \n{description}")
+            with col2:
+                st.markdown(status)
+            if running:
+                locked_model = st.session_state.get("locked_model_name", "")
+                st.caption(f"⏳ Working... · {locked_model}" if locked_model else "⏳ Working...")
         if output:
             with st.expander("View output", expanded=expanded):
                 st.markdown(output)

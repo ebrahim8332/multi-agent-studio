@@ -596,14 +596,14 @@ def _format_news_items(news_items: list[dict]) -> str:
         return "No recent news found."
     lines = []
     for item in news_items:
-        lines.append(f"[Tier {item.get('tier', 3)}] {item.get('title', '')}: {item.get('content', '')[:400]}")
+        lines.append(f"[Tier {item.get('tier', 3)}] {item.get('title', '')}: {item.get('content', '')[:550]}")
     return "\n".join(lines)
 
 
 def _format_catalyst_items(catalyst_items: list[dict]) -> str:
     if not catalyst_items:
         return "No upcoming catalysts identified."
-    return "\n".join(f"- {item.get('title', '')}: {item.get('content', '')[:300]}" for item in catalyst_items)
+    return "\n".join(f"- {item.get('title', '')}: {item.get('content', '')[:400]}" for item in catalyst_items)
 
 
 # ── Agent 3: Fundamentals Analyst ─────────────────────────────────────────────
@@ -616,6 +616,9 @@ def run_fundamentals_analyst(state: dict, chain) -> dict:
     """
     db = state["data_bundle"]
     time_horizon = state.get("time_horizon", "Medium-term (1-3 years)")
+    supp = db.get("supplementary", {})
+    eps_trailing = supp.get("eps_trailing")
+    price_to_book = supp.get("price_to_book")
 
     messages = [
         {
@@ -629,13 +632,17 @@ def run_fundamentals_analyst(state: dict, chain) -> dict:
                 "4-8 quarters. A consistent beat pattern is a positive signal; consistent "
                 "misses are a negative signal. State this explicitly. "
                 "State when a metric is above, at, or below sector peers — do not just "
-                "report the number. Flag any metric that is deteriorating.\n\n"
+                "report the number. Flag any metric that is deteriorating. Where trailing "
+                "EPS or price-to-book is provided, use it to sharpen the Valuation vs Peers "
+                "section, not just P/E.\n\n"
                 "Time horizon affects framing: short-term weights recent momentum and "
                 "earnings surprises; long-term weights structural margin trends and FCF "
                 "trajectory.\n\n"
                 "Output format: structured findings under exactly five headings: "
                 "Revenue Trend, Profitability Trend, Earnings Quality, Valuation vs Peers, "
-                "Red Flags (write 'None identified' if there are none). Plain English. No jargon.\n\n"
+                "Red Flags (write 'None identified' if there are none). Every heading needs "
+                "at least 2-3 substantive sentences grounded in specific numbers from the "
+                "data below — a one-line heading is not acceptable. Plain English. No jargon.\n\n"
                 f"{STYLE_RULES}"
             ),
         },
@@ -645,7 +652,9 @@ def run_fundamentals_analyst(state: dict, chain) -> dict:
                 f"Company: {db['company_name']} ({db['ticker']}) — {db['sector']} / {db['industry']}\n"
                 f"Time horizon: {time_horizon}\n\n"
                 f"Current P/E ({db['pe_used']}): {db['pe_value']}\n"
-                f"Revenue (TTM): ${db['revenue_ttm']:,.0f}\n"
+                + (f"Trailing EPS: {eps_trailing:.2f}\n" if eps_trailing is not None else "")
+                + (f"Price-to-book: {price_to_book:.2f}\n" if price_to_book is not None else "")
+                + f"Revenue (TTM): ${db['revenue_ttm']:,.0f}\n"
                 f"Revenue growth YoY: {db['revenue_growth']*100:.1f}%\n"
                 f"Gross margin: {db['gross_margin']*100:.1f}%\n"
                 f"Operating margin: {db['operating_margin']*100:.1f}%\n"
@@ -661,7 +670,7 @@ def run_fundamentals_analyst(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, agent_label="Fundamentals Analyst")
+    response, model = chain.complete(messages, timeout=120, max_tokens=3000, agent_label="Fundamentals Analyst")
     return {"fundamentals_analysis": response, "model_used": model, "prompt_sent": messages}
 
 
@@ -681,9 +690,12 @@ def run_quality_analyst(state: dict, chain) -> dict:
     growth_hits = search_exa_only(f"{company_name} long-term growth prospects industry position", max_results=4)
 
     def _format_hits(hits):
+        # search_exa_only() already fetches up to 2000 chars per hit (see
+        # search_client.py) — truncating much lower than that here would
+        # throw away most of what was just fetched for no reason.
         if not hits:
             return "No relevant results found."
-        return "\n".join(f"- {h.get('title', '')}: {h.get('content', '')[:600]}" for h in hits)
+        return "\n".join(f"- {h.get('title', '')}: {h.get('content', '')[:1800]}" for h in hits)
 
     supp = db.get("supplementary", {})
     insider_lines = "\n".join(
@@ -708,7 +720,9 @@ def run_quality_analyst(state: dict, chain) -> dict:
                 "State this framing explicitly when discussing insider activity.\n\n"
                 "Output format: structured findings under exactly four headings: "
                 "Competitive Moat, Brand and Market Position, Management Signals, "
-                "Long-Term Prospects. Plain English.\n\n"
+                "Long-Term Prospects. Every heading needs at least 2-3 substantive "
+                "sentences grounded in the research provided — a one-line heading is "
+                "not acceptable. Plain English.\n\n"
                 f"{STYLE_RULES}"
             ),
         },
@@ -727,7 +741,7 @@ def run_quality_analyst(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, agent_label="Business Quality Analyst")
+    response, model = chain.complete(messages, timeout=100, max_tokens=2500, agent_label="Business Quality Analyst")
     return {"quality_analysis": response, "model_used": model, "prompt_sent": messages}
 
 
@@ -742,6 +756,9 @@ def run_risk_analyst(state: dict, chain) -> dict:
     """
     db = state["data_bundle"]
     time_horizon = state.get("time_horizon", "Medium-term (1-3 years)")
+    supp = db.get("supplementary", {})
+    beta = supp.get("beta")
+    short_pct = supp.get("short_percent_of_float")
 
     messages = [
         {
@@ -755,11 +772,18 @@ def run_risk_analyst(state: dict, chain) -> dict:
                 "Reuters, Bloomberg, FT, WSJ, AP, Yahoo Finance) carry more weight than "
                 "Tier 2 (industry publications) or Tier 3 (blogs, press releases). Each "
                 "news item below is labelled with its tier.\n\n"
+                "Where beta is provided, use it as evidence for Economic Risk — a beta "
+                "above 1.3 means the stock swings harder than the market in a downturn; "
+                "below 0.8 means it is more defensive. Where short interest is provided, "
+                "use it as evidence for Competition or Valuation Risk — elevated short "
+                "interest signals the market sees a specific bear thesis, not just noise.\n\n"
                 "Incorporate the macro context: note whether the current macro "
                 "environment is a tailwind, headwind, or neutral for this sector. Scan "
                 "catalyst items for upcoming events that could affect risk.\n\n"
                 "Output format: one paragraph per risk category, beginning with the "
-                "severity rating in brackets. Example: '[High] Valuation risk: ...'. "
+                "severity rating in brackets. Example: '[High] Valuation risk: ...'. Each "
+                "paragraph needs at least 2-3 substantive sentences citing specific "
+                "evidence — a one-line paragraph is not acceptable. "
                 "Categories, in order: Valuation Risk, Economic Risk, Competition Risk, "
                 "Regulatory Risk, Business Dependency Risk. "
                 "Add a final paragraph titled 'Macro Context' and a final paragraph "
@@ -773,7 +797,9 @@ def run_risk_analyst(state: dict, chain) -> dict:
                 f"Company: {db['company_name']} ({db['ticker']}) — {db['sector']} / {db['industry']}\n"
                 f"Time horizon: {time_horizon}\n"
                 f"Current P/E ({db['pe_used']}): {db['pe_value']}\n"
-                f"Peer comparison:\n{_format_peer_table(db['peers'])}\n\n"
+                + (f"Beta: {beta:.2f}\n" if beta is not None else "")
+                + (f"Short interest (% of float): {short_pct*100:.1f}%\n" if short_pct is not None else "")
+                + f"Peer comparison:\n{_format_peer_table(db['peers'])}\n\n"
                 f"Recent news (tiered):\n{_format_news_items(db['news_items'])}\n\n"
                 f"Macro context for this sector:\n{db.get('macro_context') or 'No sector macro context available.'}\n\n"
                 f"Upcoming catalysts:\n{_format_catalyst_items(db['catalyst_items'])}\n\n"
@@ -782,7 +808,7 @@ def run_risk_analyst(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, agent_label="Risk Analyst")
+    response, model = chain.complete(messages, timeout=120, max_tokens=3000, agent_label="Risk Analyst")
     return {"risk_analysis": response, "model_used": model, "prompt_sent": messages}
 
 
@@ -827,7 +853,7 @@ def run_bull_advocate(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, agent_label="Bull Advocate")
+    response, model = chain.complete(messages, timeout=90, max_tokens=1500, agent_label="Bull Advocate")
     return {"bull_case": response, "model_used": model, "prompt_sent": messages}
 
 
@@ -875,7 +901,7 @@ def run_bear_advocate(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, agent_label="Bear Advocate")
+    response, model = chain.complete(messages, timeout=90, max_tokens=1500, agent_label="Bear Advocate")
     return {"bear_case": response, "model_used": model, "prompt_sent": messages}
 
 
@@ -999,7 +1025,9 @@ def run_synthesizer(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, agent_label="Synthesizer", schema=SYNTHESIZER_SCHEMA)
+    response, model = chain.complete(
+        messages, timeout=120, max_tokens=4000, agent_label="Synthesizer", schema=SYNTHESIZER_SCHEMA
+    )
 
     try:
         data = json.loads(response)
