@@ -124,7 +124,12 @@ def _run_parallel(base_session_state: dict, jobs: list) -> tuple[list, list]:
     job 0's model lock as the new shared lock (an arbitrary but consistent
     choice, matching Module 1's convention).
 
-    Returns (results, errors) — errors[i] is None on success.
+    Returns (results, errors) — errors[i] is None on success, otherwise a
+    non-empty failure description. Callers must check `results[i] is None`
+    (or `errors[i] is not None`) to detect a failed job — never rely on the
+    truthiness of the error string itself: some exceptions (notably
+    concurrent.futures.TimeoutError raised with no message) stringify to
+    "", which is falsy and would let a real failure slip past `any(errors)`.
     """
     isolated = []
     for _ in jobs:
@@ -145,7 +150,7 @@ def _run_parallel(base_session_state: dict, jobs: list) -> tuple[list, list]:
             try:
                 results[i] = future.result(timeout=180)
             except Exception as e:
-                errors[i] = str(e)
+                errors[i] = str(e) or repr(e) or f"{type(e).__name__} (no message)"
 
     merged_log = list(base_session_state.get(M02_CALL_LOG_KEY, []))
     for s in isolated:
@@ -559,8 +564,8 @@ def render() -> None:
                 (run_risk_analyst,         (state_for_agents,)),
             ])
 
-        if any(errors):
-            failed = [AGENTS[2 + i][1] for i, e in enumerate(errors) if e]
+        if any(r is None for r in results):
+            failed = [AGENTS[2 + i][1] for i, r in enumerate(results) if r is None]
             st.error(f"Analyst agent(s) failed: {', '.join(failed)}. Try Start Over.")
             for name, label, desc in AGENTS[2:5]:
                 _agent_panel(ph[name], label, desc, STATUS_FAILED)
@@ -604,7 +609,7 @@ def render() -> None:
                 (run_bear_advocate, (state_for_advocates,)),
             ])
 
-        if any(errors):
+        if any(r is None for r in results):
             st.error("Bull or Bear advocate failed. Try Start Over.")
             _agent_panel(bull_ph, "Agent 6: Bull Advocate", "", STATUS_FAILED)
             _agent_panel(bear_ph, "Agent 7: Bear Advocate", "", STATUS_FAILED)
