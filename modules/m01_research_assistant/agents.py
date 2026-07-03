@@ -239,7 +239,7 @@ def _question_count(length: str) -> tuple[int, int]:
     if "Short" in length:
         return 2, 3
     elif "Full" in length:
-        return 6, 8
+        return 8, 10
     else:
         return 4, 5
 
@@ -321,8 +321,8 @@ def run_planner(state: dict, chain, user_edits: str = "") -> dict:
     if not questions:
         questions = [l.strip() for l in response.strip().split("\n") if l.strip()]
 
-    # Cap at 8 questions
-    questions = questions[:8]
+    # Cap at 10 questions
+    questions = questions[:10]
 
     return {"questions": questions, "model_used": model, "prompt_sent": messages}
 
@@ -394,7 +394,7 @@ def flag_irrelevant_questions(research: dict, chain, skip: list = None) -> list[
         snippets = []
         for j, h in enumerate(hits, 1):
             title   = h.get("title", "")
-            content = h.get("content", "")[:450]
+            content = h.get("content", "")[:900]
             snippets.append(f"  Source {j}: {title} — {content}")
         block = f"{label}: {question}\n" + "\n".join(snippets)
         question_blocks.append(block)
@@ -458,15 +458,15 @@ def run_researcher(state: dict, target_questions: list = None) -> dict:
     """
     questions   = target_questions if target_questions is not None else state["questions"]
     search      = get_search_chain()
-    new_research, new_sources, provider_stats = search.search_parallel(questions, max_results=3)
+    new_research, new_sources, provider_stats = search.search_parallel(questions, max_results=5)
 
-    # Enrich top sources with full article text
-    new_research, enriched_count = search.enrich_top_sources(new_research)
+    # Enrich top sources with full article text (top 3 per question, not 2)
+    new_research, enriched_count = search.enrich_top_sources(new_research, max_per_query=3)
 
     prompt_sent = [
         {"role": "system", "content": (
             f"Search engines: Tavily + Exa (all questions fired simultaneously)\n"
-            f"Max results per query per engine: 3"
+            f"Max results per query per engine: 5"
         )},
         {"role": "user", "content": "Search queries:\n\n" + "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions))},
     ]
@@ -649,7 +649,7 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
         snippets = []
         for hit in hits:
             title   = hit.get("title", "")
-            content = hit.get("content", "")[:1800]
+            content = hit.get("content", "")[:2500]
             url     = hit.get("url", "")
             try:
                 from urllib.parse import urlparse
@@ -987,7 +987,7 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
         snippets = []
         for hit in hits:
             title   = hit.get("title", "")
-            content = hit.get("content", "")[:1800]
+            content = hit.get("content", "")[:2500]
             url     = hit.get("url", "")
             try:
                 from urllib.parse import urlparse
@@ -1191,15 +1191,15 @@ def run_fact_checker(state: dict, chain) -> dict:
     source_lines = []
     total = 0
     for q in questions:
-        hits = research.get(q, [])[:3]
+        hits = research.get(q, [])[:5]
         for hit in hits:
-            if total >= 25:
+            if total >= 40:
                 break
-            title   = hit.get("title", "Untitled")[:60]
-            content = hit.get("content", "")[:600]
+            title   = hit.get("title", "Untitled")
+            content = hit.get("content", "")[:1200]
             source_lines.append(f"- {title}: {content}")
             total += 1
-        if total >= 25:
+        if total >= 40:
             break
 
     sources_text = "\n".join(source_lines) if source_lines else "No sources available."
@@ -1209,8 +1209,9 @@ def run_fact_checker(state: dict, chain) -> dict:
             "role": "system",
             "content": (
                 "You are a fact-checker. You will receive a draft paper and a set of source "
-                "summaries. Identify 6-10 specific factual claims in the draft and check each "
-                "one against the sources provided.\n\n"
+                "summaries. Identify 15-20 specific factual claims in the draft and check each "
+                "one against the sources provided. Spread your checks across the full paper, "
+                "not just the opening section.\n\n"
                 "Verdict definitions:\n"
                 "Supported: the claim is directly backed by a source in the list.\n"
                 "Weak: partial support — a source is related but does not confirm the claim directly.\n"
@@ -1230,9 +1231,9 @@ def run_fact_checker(state: dict, chain) -> dict:
         {
             "role": "user",
             "content": (
-                f"Draft (first 9,000 chars):\n{draft}\n\n"
+                f"Draft (up to 30,000 chars):\n{draft}\n\n"
                 f"Source evidence:\n{sources_text}\n\n"
-                "Identify 6-10 specific factual claims and check each one."
+                "Identify 15-20 specific factual claims spread across the full paper and check each one."
             ),
         },
     ]

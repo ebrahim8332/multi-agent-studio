@@ -30,6 +30,7 @@ Article enrichment:
 """
 
 import os
+import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -208,13 +209,19 @@ class SearchChain:
             provider_stats: {query: {"tavily": count, "exa": count, "serper": count}}
                             Counts show how many results each provider contributed per query.
         """
-        # Submit all (query, provider) pairs at once
+        # Fire Tavily and Exa in two separate batches with a 1-second stagger.
+        # Firing all queries at both providers simultaneously (N×2 threads) works
+        # at low query counts, but at 10 queries × 5 results the burst can trip
+        # provider rate limits. Staggering Exa by 1 second spreads the load without
+        # meaningfully affecting total wall-clock time (both batches overlap).
         futures = {}  # future -> (query, provider_name)
-        with ThreadPoolExecutor(max_workers=len(queries) * 2) as executor:
+        with ThreadPoolExecutor(max_workers=max(len(queries) * 2, 4)) as executor:
             for query in queries:
                 ft = executor.submit(_search_tavily, query, max_results)
-                fe = executor.submit(_search_exa,    query, max_results)
                 futures[ft] = (query, "tavily")
+            time.sleep(1)  # 1-second stagger before firing Exa
+            for query in queries:
+                fe = executor.submit(_search_exa, query, max_results)
                 futures[fe] = (query, "exa")
 
             # Collect results as they complete
@@ -222,14 +229,14 @@ class SearchChain:
             for future in as_completed(futures):
                 query, provider = futures[future]
                 try:
-                    raw[query][provider] = future.result(timeout=30)
+                    raw[query][provider] = future.result(timeout=45)
                 except Exception:
                     raw[query][provider] = []
 
         # Merge, deduplicate, Serper fallback per query.
-        # Cap to top 3 from Tavily + top 3 from Exa in API rank order.
+        # Cap to top 5 from Tavily + top 5 from Exa in API rank order.
         # Both providers rank by semantic relevance — first results are best.
-        TOP_N_PER_PROVIDER = 3
+        TOP_N_PER_PROVIDER = 5
 
         research       = {}
         sources        = []
@@ -239,7 +246,7 @@ class SearchChain:
             tavily_results = raw[query]["tavily"]
             exa_results    = raw[query]["exa"]
 
-            # Select top 3 from each provider, deduplicate between them
+            # Select top 5 from each provider, deduplicate between them
             seen_urls = set()
             selected  = []
             for hit in tavily_results[:TOP_N_PER_PROVIDER]:
@@ -332,6 +339,10 @@ class SearchChain:
         if not url_to_hits:
             return research, 0
 
+        # Brief pause before Extract call to avoid hammering Tavily immediately
+        # after the parallel search burst. No effect on quality; avoids 429 errors.
+        time.sleep(2)
+
         # Fetch full text from Tavily Extract
         try:
             extract_response = client.extract(urls=list(url_to_hits.keys()))
@@ -352,7 +363,7 @@ class SearchChain:
             full_text = results_by_url.get(url, "")
             if not full_text:
                 continue
-            snippet = full_text[:2000]
+            snippet = full_text[:3000]
             for query, idx in locations:
                 if idx < len(enriched_research.get(query, [])):
                     enriched_research[query][idx]["content"]  = snippet
