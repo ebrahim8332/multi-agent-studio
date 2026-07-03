@@ -522,7 +522,7 @@ def run_critic(state: dict, chain) -> dict:
             for h in hits:
                 title   = h.get("title", "Untitled")
                 url     = h.get("url", "")
-                content = h.get("content", "")[:800]
+                content = h.get("content", "")[:1200]
                 try:
                     from urllib.parse import urlparse
                     domain = urlparse(url).netloc.replace("www.", "")
@@ -716,7 +716,7 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, timeout=120, max_tokens=8000, agent_label="Writer")
+    response, model = chain.complete(messages, timeout=180, max_tokens=12000, agent_label="Writer")
 
     # Extract TITLE: line from the top of the response
     lines = response.strip().split("\n")
@@ -948,7 +948,7 @@ def run_editor(state: dict, chain) -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, timeout=120, max_tokens=8000, agent_label="Editor")
+    response, model = chain.complete(messages, timeout=180, max_tokens=12000, agent_label="Editor")
     return {"final": response, "model_used": model, "prompt_sent": messages}
 
 
@@ -1065,7 +1065,7 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
         },
     ]
 
-    response, model = chain.complete(messages, timeout=120, max_tokens=8000, agent_label="Writer B")
+    response, model = chain.complete(messages, timeout=180, max_tokens=12000, agent_label="Writer B")
 
     lines = response.strip().split("\n")
     paper_title = topic
@@ -1096,8 +1096,8 @@ def run_debate_judge(state: dict, chain) -> dict:
         winner, reasoning, incorporate (list), synthesis, model_used, prompt_sent
     On exception: returns safe default (winner="A").
     """
-    draft_a = state.get("draft", "")[:7000]
-    draft_b = state.get("draft_b", "")[:7000]
+    draft_a = state.get("draft", "")[:28000]
+    draft_b = state.get("draft_b", "")[:28000]
 
     messages = [
         {
@@ -1183,7 +1183,7 @@ def run_fact_checker(state: dict, chain) -> dict:
 
     On any exception: returns a clean pass so the pipeline never blocks.
     """
-    draft    = state.get("draft", "")[:9000]
+    draft    = state.get("draft", "")[:30000]
     research = state.get("research", {})
     questions = state.get("questions", [])
 

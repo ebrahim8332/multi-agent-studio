@@ -111,7 +111,7 @@ def _search_exa(query: str, max_results: int) -> list[dict]:
         {
             "title":   r.title or "",
             "url":     r.url or "",
-            "content": (r.text or "")[:400],
+            "content": (r.text or "")[:1200],
         }
         for r in response.results
     ]
