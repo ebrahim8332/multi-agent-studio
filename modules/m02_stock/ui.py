@@ -483,6 +483,13 @@ def render() -> None:
     st.markdown("---")
 
     # ── Placeholders ───────────────────────────────────────────────────────────
+    # error_ph is created first, before Agent 1's own placeholder, so a halt
+    # message renders at the top of the page instead of below all nine agent
+    # panels -- previously the error phase used plain st.error() calls, which
+    # execute after every st.empty() below has already claimed its position,
+    # landing the message at the very bottom of a tall page, easy to miss
+    # without scrolling.
+    error_ph      = st.empty()
     resolver_ph   = st.empty()
     data_ph       = st.empty()
     checkpoint_ph = st.empty()
@@ -578,9 +585,10 @@ def render() -> None:
     # ══════════════════════════════════════════════════════════════════════════
     if phase == "error":
         error_msg = st.session_state.get("m02_error", "Something went wrong.")
-        for line in error_msg.split("\n\n"):
-            if line.strip():
-                st.error(line) if error_msg.split("\n\n")[0] == line else st.markdown(line)
+        with error_ph.container():
+            for line in error_msg.split("\n\n"):
+                if line.strip():
+                    st.error(line) if error_msg.split("\n\n")[0] == line else st.markdown(line)
         for name, label, desc in AGENTS:
             _agent_panel(ph[name], label, desc, STATUS_WAITING)
         return
@@ -607,8 +615,12 @@ def render() -> None:
             f"News articles retrieved: {len(db.get('news_items', []))}\n\n"
             f"Time horizon: {time_horizon}"
         )
+        # expanded left at its default (False) here -- the checkpoint box just
+        # below shows this exact same summary, open and interactive with the
+        # Continue/Start Over buttons. Auto-expanding this panel's "View
+        # output" too meant the identical text appeared twice in a row.
         _agent_panel(data_ph, "Agent 2: Data Agent", "Data pulled and validated",
-                     STATUS_COMPLETE, output=data_summary, expanded=True)
+                     STATUS_COMPLETE, output=data_summary)
 
         with checkpoint_ph.container():
             st.info(data_summary)
@@ -626,6 +638,7 @@ def render() -> None:
                     st.rerun()
             with col2:
                 if st.button("Start Over", key="m02_checkpoint_stop_btn"):
+                    st.session_state["m02_form_key"] += 1
                     for key in _STATE_KEYS:
                         st.session_state.pop(key, None)
                     st.rerun()
@@ -794,6 +807,7 @@ def render() -> None:
                     st.rerun()
             with col2:
                 if st.button("Start Over", key="m02_factcheck_stop_btn"):
+                    st.session_state["m02_form_key"] += 1
                     for key in _STATE_KEYS:
                         st.session_state.pop(key, None)
                     st.rerun()
@@ -968,6 +982,7 @@ def render() -> None:
             )
 
             if st.button("Start Over", key="m02_complete_stop_btn"):
+                st.session_state["m02_form_key"] += 1
                 for key in _STATE_KEYS:
                     st.session_state.pop(key, None)
                 st.rerun()

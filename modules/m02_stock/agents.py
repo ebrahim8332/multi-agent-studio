@@ -510,9 +510,30 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
         ("analyst_mean_target", "Analyst mean price target", info.get("targetMeanPrice")),
     ]
 
+    # ETFs and mutual funds are the single most common reason this gate trips.
+    # A fund holds many companies rather than being one, so it has no sector,
+    # industry, margins, or revenue of its own -- not a data gap, a mismatch
+    # between what this tool analyzes (individual companies) and what was
+    # asked for. Checked here (not folded into the generic message below)
+    # because it is worth telling the user precisely, since it is a design
+    # limitation they should expect every time, not an occasional data gap.
+    quote_type = (info.get("quoteType") or "").upper()
+    is_fund = quote_type in ("ETF", "MUTUALFUND")
+
     fields_found = 0
     for key, label, value in required_checks:
         if _is_missing(value):
+            if is_fund:
+                return {
+                    "halted": True,
+                    "error": (
+                        f"'{ticker}' is an ETF or mutual fund, not an individual company.\n\n"
+                        "This module analyzes individual stocks -- fundamentals like sector, "
+                        "margins, and revenue only exist for a single company, not a fund "
+                        "holding many of them.\n\n"
+                        "Try the ticker of an individual stock instead."
+                    ),
+                }
             return {
                 "halted": True,
                 "error": (
