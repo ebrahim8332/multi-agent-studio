@@ -72,6 +72,15 @@ class GroqProvider(BaseProvider):
         # but key names are not enforced at the API level (our parser handles that).
         if schema:
             kwargs["response_format"] = {"type": "json_object"}
+            # Qwen3 models on Groq use thinking mode by default, generating a long
+            # <think>...</think> block before the JSON. That block consumes most of
+            # the output token budget and truncates the JSON. /no_think disables it.
+            # Other models ignore this prefix silently.
+            messages = list(messages)
+            sys_idx = next((i for i, m in enumerate(messages) if m.get("role") == "system"), None)
+            if sys_idx is not None:
+                messages[sys_idx] = {**messages[sys_idx], "content": "/no_think\n\n" + messages[sys_idx]["content"]}
+                kwargs["messages"] = messages
         response = self.client.chat.completions.create(**kwargs)
 
         # Extract token counts from usage

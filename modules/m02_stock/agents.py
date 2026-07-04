@@ -1201,7 +1201,7 @@ def run_fact_checker(state: dict, chain) -> dict:
     fact_check_error_detail = ""
     try:
         response, model = chain.complete(
-            messages, timeout=90, max_tokens=3000, agent_label="Fact Checker", schema=FACT_CHECK_SCHEMA
+            messages, timeout=90, max_tokens=6000, agent_label="Fact Checker", schema=FACT_CHECK_SCHEMA
         )
         raw_claims = json.loads(response).get("claims", [])
     except Exception as e:
