@@ -302,7 +302,25 @@ def run_planner(state: dict, chain, user_edits: str = "") -> dict:
                 "Stay faithful to the topic — do not reinterpret it or shift to a related subject. "
                 "Each question should be specific enough to search for directly on the web. "
                 "Use vocabulary appropriate for the stated audience. "
-                "Number each question (1. 2. 3. etc). One question per line. Nothing else."
+                "\n\nNon-overlap rule: every question must cover distinct ground. "
+                "Before finalising, check each question against the others. "
+                "If two questions would return overlapping search results or probe the same aspect of the topic, "
+                "replace one with a question that covers a gap.\n"
+                + (
+                    "\nCoverage framework — for a full report, distribute questions across these dimensions "
+                    "(not all dimensions apply to every topic, but aim for breadth):\n"
+                    "- Current state: what is happening now, at what scale\n"
+                    "- Causes or drivers: why it is happening\n"
+                    "- Mechanisms: how it works in practice\n"
+                    "- Evidence: what the data or research shows\n"
+                    "- Stakeholder perspectives: who is affected and how\n"
+                    "- Challenges or limitations: what is not working or contested\n"
+                    "- Implications or outlook: what comes next or what this means\n"
+                    "Use this as a checklist, not a rigid template. "
+                    "Skip dimensions that do not apply. Add domain-specific angles the topic requires.\n"
+                    if "Full" in length else ""
+                ) +
+                "\nNumber each question (1. 2. 3. etc). One question per line. Nothing else."
             ),
         },
     ]
