@@ -31,7 +31,7 @@ from modules.m01_research_assistant.agents import (
     flag_weak_questions, flag_irrelevant_questions,
 )
 from modules.m01_research_assistant.pipeline import get_initial_state
-from utils.doc_builder import build_research_doc
+from utils.doc_builder import build_research_doc, build_research_quality_doc
 
 
 AGENTS = [
@@ -2205,17 +2205,23 @@ def _show_run_summary() -> None:
 
 
 def _show_download() -> None:
-    full_state = st.session_state.get("m01_full_state", {})
-    topic      = full_state.get("topic", "research")
-    model      = full_state.get("model_used", "unknown")
+    full_state     = st.session_state.get("m01_full_state", {})
+    agent_outputs  = st.session_state.get("m01_agent_outputs", {})
+    judge_result   = st.session_state.get("m01_judge_result", {})
+    writer_attempt = st.session_state.get("m01_writer_attempt", 1)
+    inputs         = st.session_state.get("m01_inputs", {})
+    call_log       = st.session_state.get("m01_call_log", [])
+    topic          = full_state.get("topic", "research")
+    model          = full_state.get("model_used", "unknown")
 
     st.markdown("---")
     st.success("Research complete.")
     st.caption(f"Final model: {model}")
 
-    slug     = topic.lower()[:40].replace(" ", "-").replace("/", "-")
-    slug     = "".join(c for c in slug if c.isalnum() or c == "-")
-    filename = f"research-{slug}-v1.docx"
+    slug             = topic.lower()[:40].replace(" ", "-").replace("/", "-")
+    slug             = "".join(c for c in slug if c.isalnum() or c == "-")
+    filename         = f"research-{slug}-v1.docx"
+    quality_filename = f"research-{slug}-v1-quality.docx"
 
     if not full_state.get("final", "").strip():
         st.warning(
@@ -2224,10 +2230,39 @@ def _show_download() -> None:
         )
         return
 
+    # Parse critic summary for the quality report
+    raw_critique   = full_state.get("critique", "")
+    questions      = full_state.get("questions", [])
+    critic_summary = _parse_critic_summary(raw_critique, questions) if raw_critique else []
+
     doc_bytes = build_research_doc(full_state)
-    st.download_button(
-        label="Download Word document",
-        data=doc_bytes,
-        file_name=filename,
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    )
+
+    quality_state = {
+        "topic":             topic,
+        "model_used":        model,
+        "format_style":      inputs.get("format_style", ""),
+        "audience":          inputs.get("audience", ""),
+        "writer_attempt":    writer_attempt,
+        "fact_check_result": full_state.get("fact_check_result", {}),
+        "judge_result":      judge_result,
+        "critic_summary":    critic_summary,
+        "debate_result":     full_state.get("debate_result", {}),
+        "call_log":          call_log,
+    }
+    quality_bytes = build_research_quality_doc(quality_state)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button(
+            label="Download paper",
+            data=doc_bytes,
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    with col2:
+        st.download_button(
+            label="Download quality report",
+            data=quality_bytes,
+            file_name=quality_filename,
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )

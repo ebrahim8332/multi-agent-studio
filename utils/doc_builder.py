@@ -268,6 +268,317 @@ def _bullet_list(doc: Document, items: list, empty_text: str = "No findings retu
         _add_bold_runs(para, str(item))
 
 
+def build_research_quality_doc(quality_state: dict) -> bytes:
+    """
+    Builds a tight Quality Report Word document from the Research Assistant pipeline's
+    quality-check results. Intended to be read alongside the main paper.
+
+    Contains: warnings, fact check, judge scorecard, critic assessment,
+    debate result, and run metadata. Problems appear at the top.
+
+    Args:
+        quality_state: dict with keys:
+            topic, model_used, format_style, audience, writer_attempt,
+            fact_check_result, judge_result, critic_summary (list of dicts),
+            debate_result, call_log
+
+    Returns:
+        bytes: the .docx file contents, ready for st.download_button.
+    """
+    doc = Document()
+    _set_document_styles(doc)
+
+    topic          = quality_state.get("topic", "Research Report")
+    model_used     = quality_state.get("model_used", "unknown")
+    format_style   = quality_state.get("format_style", "")
+    audience       = quality_state.get("audience", "")
+    writer_attempt = quality_state.get("writer_attempt", 1)
+    fc_result      = quality_state.get("fact_check_result", {})
+    judge_result   = quality_state.get("judge_result", {})
+    critic_summary = quality_state.get("critic_summary", [])
+    debate_result  = quality_state.get("debate_result", {})
+    call_log       = quality_state.get("call_log", [])
+    today          = date.today().strftime("%B %d, %Y")
+
+    # ── Title block ──────────────────────────────────────────────────────────
+    title_para = doc.add_paragraph()
+    title_para.paragraph_format.space_after = Pt(4)
+    title_run = title_para.add_run("Quality Report")
+    title_run.font.name = "Calibri"
+    title_run.font.size = Pt(22)
+    title_run.font.bold = True
+    title_run.font.color.rgb = NAVY
+
+    meta_para = doc.add_paragraph()
+    meta_para.paragraph_format.space_after = Pt(2)
+    short_topic = topic[:80] + ("..." if len(topic) > 80 else "")
+    meta_run = meta_para.add_run(f"{short_topic}  |  Research Assistant  |  {today}")
+    meta_run.font.size = Pt(9)
+    meta_run.font.color.rgb = GREY
+
+    meta2_para = doc.add_paragraph()
+    meta2_para.paragraph_format.space_after = Pt(2)
+    meta2_run = meta2_para.add_run(
+        f"Format: {format_style}  |  Audience: {audience}  |  Model: {model_used}"
+    )
+    meta2_run.font.size = Pt(9)
+    meta2_run.font.color.rgb = GREY
+
+    _add_horizontal_rule(doc)
+
+    # ── Warnings banner — problems the reader must know about ────────────────
+    fc_flagged     = fc_result.get("flagged", False)
+    fc_error       = fc_result.get("error", False)
+    judge_flagged  = judge_result.get("flagged", False)
+    score_variance = judge_result.get("score_variance", {})
+    redrafted      = writer_attempt > 1
+
+    warnings = []
+    if fc_error:
+        warnings.append(
+            "Fact check failed — the AI could not complete its review. "
+            "Human review of all factual claims is required."
+        )
+    elif fc_flagged:
+        u = fc_result.get("unsupported_count", 0)
+        w = fc_result.get("weak_count", 0)
+        warnings.append(
+            f"Fact check: {u} unsupported claim(s), {w} weakly supported claim(s). "
+            "See Fact Check section below."
+        )
+    if judge_flagged:
+        scores = judge_result.get("scores", {})
+        rule   = judge_result.get("rule_check", {})
+        dim_names = {
+            "completeness": "Completeness", "argument_quality": "Argument quality",
+            "source_integration": "Source integration", "format_adherence": "Format adherence",
+        }
+        issues = []
+        if not rule.get("word_count_ok", True):
+            issues.append("word count")
+        if not rule.get("sections_ok", True):
+            issues.append("section count")
+        for k, v in scores.items():
+            if v.get("score", 5) < 4:
+                issues.append(f"{dim_names.get(k, k)} scored {v.get('score')}/5")
+        warnings.append("Judge flagged: " + ", ".join(issues) + ".")
+    if score_variance:
+        warnings.append(
+            "Unstable Judge scores — two evaluations disagreed on at least one dimension. "
+            "See Judge Scorecard below."
+        )
+    if redrafted:
+        warnings.append(
+            f"Paper was re-drafted {writer_attempt - 1} time(s). "
+            "Fact check and Debate Judge reflect the original draft only — not the final version."
+        )
+
+    doc.add_heading("Warnings", level=1)
+    if warnings:
+        for w_text in warnings:
+            para = doc.add_paragraph(style="List Bullet")
+            para.paragraph_format.left_indent = Inches(0.3)
+            para.paragraph_format.space_after = Pt(4)
+            run = para.add_run(w_text)
+            run.bold = True
+            run.font.color.rgb = AMBER
+    else:
+        p = doc.add_paragraph()
+        ok_run = p.add_run("No warnings. All checks passed.")
+        ok_run.bold = True
+        ok_run.font.color.rgb = GREEN
+
+    # ── Fact Check ───────────────────────────────────────────────────────────
+    doc.add_heading("Fact Check", level=1)
+    claims = fc_result.get("claims", [])
+
+    if fc_error:
+        doc.add_paragraph("Fact check failed — the AI could not complete this step.")
+    elif not claims:
+        doc.add_paragraph("No claims were checked (re-draft run or fact check skipped).")
+    else:
+        u_count = fc_result.get("unsupported_count", 0)
+        w_count = fc_result.get("weak_count", 0)
+        s_count = len(claims) - u_count - w_count
+        summary_para = doc.add_paragraph()
+        summary_para.add_run(
+            f"{len(claims)} claims checked: {s_count} supported, "
+            f"{w_count} weakly supported, {u_count} unsupported."
+        )
+        # Unsupported first, then weak, then supported — problems at the top
+        order = {"Unsupported": 0, "Weak": 1, "Weakly Supported": 1, "Supported": 2}
+        sorted_claims = sorted(claims, key=lambda c: order.get(c.get("verdict", "Weak"), 1))
+
+        table = doc.add_table(rows=1, cols=3)
+        table.style = "Light Grid Accent 1"
+        hdr = table.rows[0].cells
+        hdr[0].text = "Verdict"
+        hdr[1].text = "Claim"
+        hdr[2].text = "Source"
+        for c in sorted_claims:
+            row = table.add_row().cells
+            row[0].text = c.get("verdict", "Weak")
+            row[1].text = c.get("claim", "")[:150]
+            row[2].text = c.get("source", "")[:80]
+
+        fc_conf = fc_result.get("confidence", "")
+        if fc_conf:
+            p = doc.add_paragraph()
+            conf_run = p.add_run(f"Fact checker confidence: {fc_conf}")
+            conf_run.font.size = Pt(9)
+            conf_run.font.color.rgb = GREY
+
+    # ── Judge Scorecard ───────────────────────────────────────────────────────
+    doc.add_heading("Judge Scorecard", level=1)
+    rule   = judge_result.get("rule_check", {})
+    scores = judge_result.get("scores", {})
+
+    if rule:
+        wc_ok  = rule.get("word_count_ok", True)
+        sec_ok = rule.get("sections_ok", True)
+        rule_para = doc.add_paragraph()
+        rule_para.add_run(
+            f"Word count: {'PASS' if wc_ok else 'FAIL'} "
+            f"({rule.get('word_count', 0):,} / {rule.get('word_count_target', 0):,} target)"
+            f"    Sections: {'PASS' if sec_ok else 'FAIL'} "
+            f"({rule.get('section_count', 0)} / {rule.get('min_sections', 0)} minimum)"
+        )
+
+    dim_labels = {
+        "completeness":       "Completeness",
+        "argument_quality":   "Argument quality",
+        "source_integration": "Source integration",
+        "format_adherence":   "Format adherence",
+    }
+
+    if scores:
+        table = doc.add_table(rows=1, cols=3)
+        table.style = "Light Grid Accent 1"
+        hdr = table.rows[0].cells
+        hdr[0].text = "Dimension"
+        hdr[1].text = "Score"
+        hdr[2].text = "Note"
+        for key, label in dim_labels.items():
+            s     = scores.get(key, {})
+            score = s.get("score", 0)
+            note  = s.get("note", "")
+            row   = table.add_row().cells
+            row[0].text = label
+            row[1].text = f"{score}/5"
+            row[2].text = note
+
+        j_conf = judge_result.get("confidence", "")
+        if j_conf:
+            p = doc.add_paragraph()
+            conf_run = p.add_run(f"Judge confidence: {j_conf}")
+            conf_run.font.size = Pt(9)
+            conf_run.font.color.rgb = GREY
+
+        if score_variance:
+            p = doc.add_paragraph()
+            var_run = p.add_run("Unstable dimensions (two evaluations disagreed):")
+            var_run.bold = True
+            var_run.font.color.rgb = AMBER
+            for dim, v in score_variance.items():
+                para = doc.add_paragraph(style="List Bullet")
+                para.paragraph_format.left_indent = Inches(0.3)
+                para.add_run(f"{dim_labels.get(dim, dim)}: {v['run1']}/5 then {v['run2']}/5")
+    else:
+        doc.add_paragraph("Judge result not available.")
+
+    # ── Critic Assessment ─────────────────────────────────────────────────────
+    doc.add_heading("Critic Assessment", level=1)
+    if critic_summary:
+        table = doc.add_table(rows=1, cols=3)
+        table.style = "Light Grid Accent 1"
+        hdr = table.rows[0].cells
+        hdr[0].text = "Rating"
+        hdr[1].text = "Research question"
+        hdr[2].text = "Gap / Note"
+        for entry in critic_summary:
+            rating = entry.get("rating", "Adequate")
+            gap    = entry.get("gap", "")
+            source = entry.get("source", "")
+            row    = table.add_row().cells
+            row[0].text = rating
+            row[1].text = entry.get("question", "")[:100]
+            row[2].text = (
+                gap if gap and gap.lower() not in ("none", "none identified", "none.")
+                else (f"Source: {source[:60]}" if source else "")
+            )
+    else:
+        doc.add_paragraph("Critic result not available.")
+
+    # ── Debate Judge ──────────────────────────────────────────────────────────
+    doc.add_heading("Debate Judge", level=1)
+    if redrafted:
+        doc.add_paragraph(
+            "Debate Judge was skipped on re-draft — applies to the original draft only."
+        )
+    elif debate_result:
+        winner      = debate_result.get("winner", "A")
+        reasoning   = debate_result.get("reasoning", "")
+        incorporate = debate_result.get("incorporate", [])
+        p    = doc.add_paragraph()
+        run  = p.add_run(f"Winner: Draft {winner}. ")
+        run.bold = True
+        if reasoning:
+            p.add_run(reasoning[:300])
+        if incorporate:
+            doc.add_paragraph("Key points taken from the losing draft:")
+            for point in incorporate:
+                para = doc.add_paragraph(style="List Bullet")
+                para.paragraph_format.left_indent = Inches(0.3)
+                para.add_run(str(point)[:200])
+    else:
+        doc.add_paragraph("Debate Judge result not available.")
+
+    # ── Run metadata ──────────────────────────────────────────────────────────
+    doc.add_heading("Run Metadata", level=1)
+    total_input  = sum(e.get("input_tokens",  0) for e in call_log)
+    total_output = sum(e.get("output_tokens", 0) for e in call_log)
+    total_tokens = total_input + total_output
+    meta_lines   = [
+        f"LLM calls: {len(call_log)}",
+        f"Total tokens: {total_tokens:,} ({total_input:,} in, {total_output:,} out)",
+    ]
+    if redrafted:
+        meta_lines.append(f"Writer attempts: {writer_attempt} (re-drafted {writer_attempt - 1}×)")
+    for line in meta_lines:
+        doc.add_paragraph(line)
+
+    if call_log:
+        table = doc.add_table(rows=1, cols=3)
+        table.style = "Light Grid Accent 1"
+        hdr = table.rows[0].cells
+        hdr[0].text = "Agent"
+        hdr[1].text = "Model"
+        hdr[2].text = "Tokens"
+        for entry in call_log:
+            row      = table.add_row().cells
+            row[0].text = entry.get("agent", "")
+            row[1].text = entry.get("model", "")
+            row[2].text = (
+                f"{entry.get('input_tokens', 0):,} in · "
+                f"{entry.get('output_tokens', 0):,} out"
+            )
+
+    # ── Footer ───────────────────────────────────────────────────────────────
+    doc.add_paragraph("")
+    footer_para = doc.add_paragraph()
+    footer_run = footer_para.add_run(
+        f"Generated by Multi-Agent Studio — Research Assistant  |  {today}\n"
+        "Quality report. Companion document to the paper."
+    )
+    footer_run.font.size = Pt(8)
+    footer_run.font.color.rgb = GREY
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.read()
+
+
 def build_stock_research_doc(state: dict) -> bytes:
     """
     Builds the Stock Analyser's equity research note as a Word document.
