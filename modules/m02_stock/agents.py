@@ -1103,10 +1103,13 @@ def _verify_claim(db: dict, metric: str, claimed_value_str: str) -> dict:
     The LLM never sees the true value before extraction — this is a real
     independent check, not the model grading its own homework.
 
-    Tolerance is deliberately generous: 1.5 percentage points for
-    percent-type metrics, or 5% relative (minimum 0.5 absolute) for raw
-    values — enough room for reasonable rounding ("$451.4B" -> "$450B" is
-    not a factual error), tight enough to catch a genuinely wrong number.
+    Tolerance: 3.0 percentage points for percent-type metrics (covers
+    annual vs TTM timing differences), or 5% relative (minimum 0.5
+    absolute) for raw ratio/dollar values.
+
+    Unit normalisation: if a raw-ratio metric (e.g. debt_to_equity stored
+    as 1.69) is cited with a "%" sign (e.g. "168.58%"), divide the claimed
+    value by 100 before comparing — both expressions mean the same thing.
     """
     if metric not in VERIFIABLE_METRICS:
         return {"verdict": "Could not verify", "true_value": None, "reason": "not a recognised metric"}
@@ -1120,8 +1123,13 @@ def _verify_claim(db: dict, metric: str, claimed_value_str: str) -> dict:
     if claimed is None:
         return {"verdict": "Could not verify", "true_value": true_raw, "reason": "could not parse claimed value"}
 
+    # If a raw-ratio metric is expressed with a % sign (e.g. "168.58%"
+    # for debt_to_equity stored as 1.69), convert back to ratio form.
+    if not is_percent and "%" in claimed_value_str:
+        claimed = claimed / 100
+
     true_value = true_raw * 100 if is_percent else true_raw
-    tolerance = 1.5 if is_percent else max(abs(true_value) * 0.05, 0.5)
+    tolerance = 3.0 if is_percent else max(abs(true_value) * 0.05, 0.5)
     diff = abs(claimed - true_value)
 
     if diff <= tolerance:
