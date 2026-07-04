@@ -507,7 +507,8 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
         ("fifty_two_week_high", "52-week high", info.get("fiftyTwoWeekHigh")),
         ("fifty_two_week_low", "52-week low", info.get("fiftyTwoWeekLow")),
         ("analyst_consensus", "Analyst consensus rating", analyst_dist or consensus_key),
-        ("analyst_mean_target", "Analyst mean price target", info.get("targetMeanPrice")),
+        # analyst_mean_target is supplementary — thinly-covered stocks often lack it,
+        # but the pipeline can still produce a valid note without it.
     ]
 
     # ETFs and mutual funds are the single most common reason this gate trips.
@@ -583,6 +584,7 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
 
     # ── Peers ─────────────────────────────────────────────────────────────────
     peers = _fetch_peer_data(sector, ticker)
+    no_peer_table = sector not in SECTOR_PEERS
 
     # ── News, catalysts, macro (Tavily) ──────────────────────────────────────
     raw_news = search_tavily_only(f"{company_name} stock news", max_results=10, days=30)
@@ -601,7 +603,10 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
     if macro_query:
         macro_hits = search_tavily_only(macro_query, max_results=1)
         if macro_hits:
-            macro_context = macro_hits[0].get("content", "")[:500]
+            raw_macro = macro_hits[0].get("content", "")
+            macro_context = raw_macro[:1500]
+            if len(raw_macro) > 1500:
+                macro_context += " [truncated — full article may contain additional detail]"
 
     data_quality_score, data_quality_label, data_quality_breakdown = _compute_data_quality_score(
         fields_found=fields_found,
@@ -611,6 +616,10 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
         news_count_30d=len(news_items),
         peer_count=len(peers),
     )
+    if no_peer_table and not peers:
+        data_quality_breakdown.append(
+            f"sector '{sector}' is not in the peer reference table — peer comparison is unavailable for this sector"
+        )
 
     return {
         "halted": False,
@@ -830,13 +839,15 @@ def run_quality_analyst(state: dict, chain) -> dict:
         return "\n".join(f"- {h.get('title', '')}: {h.get('content', '')[:1800]}" for h in hits)
 
     supp = db.get("supplementary", {})
+    # yfinance columns: Insider, Relation, Shares, Transaction Date, Start Date
     insider_lines = "\n".join(
-        f"- {row.get('Insider', 'Unknown')} ({row.get('Position', '')}): {row.get('Transaction', '')} {row.get('Shares', '')} shares on {row.get('Start Date', '')}"
+        f"- {row.get('Insider', 'Unknown')} ({row.get('Relation', '')}): {row.get('Shares', '')} shares, transaction dated {row.get('Start Date', row.get('Transaction Date', 'date unknown'))}"
         for row in db.get("insider_transactions", [])[:5]
     ) or "No recent insider transactions found."
 
+    # yfinance columns: Holder, Shares, % Out, Value, % Value
     holder_lines = "\n".join(
-        f"- {row.get('Holder', 'Unknown')}: {row.get('Value', 'n/a')}"
+        f"- {row.get('Holder', 'Unknown')}: {row.get('% Out', 'n/a')} of shares outstanding"
         for row in db.get("institutional_holders", [])[:5]
     ) or "No institutional holder data found."
 
@@ -1276,7 +1287,7 @@ def run_bull_advocate(state: dict, chain) -> dict:
             "content": (
                 f"Company: {db['company_name']} ({db['ticker']})\n"
                 f"Time horizon: {time_horizon}\n"
-                f"Analyst mean price target: ${db['analyst_mean_target']}\n"
+                f"Analyst mean price target: {('$' + str(db['analyst_mean_target'])) if db.get('analyst_mean_target') else 'n/a'}\n"
                 f"Analyst consensus: {db.get('analyst_distribution') or db.get('analyst_consensus_key')}\n\n"
                 f"Fundamentals Analyst findings:\n{state['fundamentals_analysis']}\n\n"
                 f"Business Quality Analyst findings:\n{state['quality_analysis']}\n\n"
@@ -1331,7 +1342,7 @@ def run_bear_advocate(state: dict, chain) -> dict:
             "content": (
                 f"Company: {db['company_name']} ({db['ticker']})\n"
                 f"Time horizon: {time_horizon}\n"
-                f"Analyst mean price target: ${db['analyst_mean_target']}\n"
+                f"Analyst mean price target: {('$' + str(db['analyst_mean_target'])) if db.get('analyst_mean_target') else 'n/a'}\n"
                 f"Analyst consensus: {db.get('analyst_distribution') or db.get('analyst_consensus_key')}\n\n"
                 f"Fundamentals Analyst findings:\n{state['fundamentals_analysis']}\n\n"
                 f"Business Quality Analyst findings:\n{state['quality_analysis']}\n\n"
@@ -1462,7 +1473,13 @@ def run_synthesizer(state: dict, chain) -> dict:
                 "explaining why.\n\n"
                 "investor_type must be your honest assessment of which investor this "
                 "thesis suits given the time horizon — this is educational framing, not "
-                "personal advice.\n\n"
+                "personal advice. Use exactly one of these four values:\n"
+                "growth: expects capital appreciation driven by high revenue or earnings growth.\n"
+                "value: stock appears undervalued relative to earnings, book value, or cash flow; "
+                "thesis is mean reversion or margin of safety.\n"
+                "income: primary appeal is dividend yield or stable cash distributions.\n"
+                "speculative: high risk, early-stage, turnaround, or thesis depends on an "
+                "uncertain catalyst. Use this when the evidence is thin or the downside is large.\n\n"
                 "evidence_summary must contain 8-12 items, each tagged + (positive) or "
                 "- (negative), each grounded in a specific data point or finding — no "
                 "generic statements.\n\n"
@@ -1615,7 +1632,7 @@ Synthesis:
 VALUATION CONTEXT
 
 Current Price: ${db.get('current_price')}   |   52-Week Range: ${db.get('fifty_two_week_low')} - ${db.get('fifty_two_week_high')}
-Trailing P/E: {db.get('pe_value') if db.get('pe_used') == 'trailing' else 'n/a'}     |   Forward P/E: {db.get('pe_value') if db.get('pe_used') == 'forward' else 'n/a'}
+{'Trailing' if db.get('pe_used') == 'trailing' else 'Forward'} P/E: {db.get('pe_value')}   |   {'Forward' if db.get('pe_used') == 'trailing' else 'Trailing'} P/E: n/a
 Gross Margin: {db['gross_margin']*100:.1f}%    |   Operating Margin: {db['operating_margin']*100:.1f}%
 
 Peer Comparison:

@@ -972,14 +972,20 @@ def render() -> None:
 
             doc_state = {**pipeline_state, "data_bundle": db, "ticker": ticker,
                          "company_name": company_name, "time_horizon": time_horizon}
-            doc_bytes = build_stock_research_doc(doc_state)
             today_slug = ticker.replace(".", "-")
-            st.download_button(
-                "⬇️ Download research note (.docx)", data=doc_bytes,
-                file_name=f"{today_slug}-research-note.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                key="m02_download_btn",
-            )
+            if not pipeline_state.get("research_note", "").strip():
+                st.warning(
+                    "The research note is empty — the Synthesizer did not produce output. "
+                    "Check the error messages above and run again."
+                )
+            else:
+                doc_bytes = build_stock_research_doc(doc_state)
+                st.download_button(
+                    "⬇️ Download research note (.docx)", data=doc_bytes,
+                    file_name=f"{today_slug}-research-note.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="m02_download_btn",
+                )
 
             if st.button("Start Over", key="m02_complete_stop_btn"):
                 st.session_state["m02_form_key"] += 1
