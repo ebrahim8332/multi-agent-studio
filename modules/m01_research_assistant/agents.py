@@ -702,13 +702,11 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
                 f"Topic: {topic}\n"
                 f"Audience: {audience}\n"
                 f"Format: {format_style}\n"
-                f"Target length: approximately {target_words:,} words. Hard maximum: {max_words:,} words. "
-                f"Stop writing when the content is complete, even if below the target. "
-                f"Do not continue beyond {max_words:,} words under any circumstances.\n"
+                f"Target length: minimum {target_words:,} words, hard maximum {max_words:,} words. "
+                f"Do not exceed {max_words:,} words under any circumstances.\n"
                 f"{angle_instruction}"
                 f"\nFormat instructions:\n{format_instructions}\n\n"
-                f"Evidence gathered:\n{evidence_text}\n\n"
-                f"Source quality assessment from the Critic:\n{critique}\n\n"
+                f"Evidence gathered (Critic quality rating shown per question):\n{evidence_text}\n\n"
                 + (
                     f"IMPORTANT — RE-DRAFT: A previous draft was reviewed and found lacking. "
                     f"The reviewer's feedback:\n{user_feedback}\n\n"
@@ -731,11 +729,9 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
                 "3. HEADINGS — use ## for all top-level section headings, ### for subheadings. "
                 "Never use # (single hash) anywhere in the paper. "
                 "Do NOT repeat the paper title as a heading — begin directly with the first section.\n"
-                f"4. LENGTH — write a minimum of {target_words:,} words. This is a hard floor, not a suggestion. "
-                "Every section must be fully developed: multiple paragraphs of analysis, evidence, and interpretation. "
-                "Do not summarise a point in one sentence when two paragraphs of depth are warranted. "
-                "Do not stop early. Before finishing, check that every section is substantive. "
-                "If any section feels thin, expand it before submitting.\n"
+                f"4. LENGTH — write a minimum of {target_words:,} words. This is a hard floor. "
+                "Every section must be fully developed with multiple paragraphs of analysis, evidence, and interpretation. "
+                "Before finishing, check that every section is substantive and expand any thin section.\n"
                 "5. SOURCES — where the Critic rated a source as Weak, use it as background "
                 "context only. Do not build a key argument on it.\n"
                 "6. GAPS — where a research question had no sources, name that gap explicitly "
@@ -941,6 +937,18 @@ def run_editor(state: dict, chain) -> dict:
         if angle else ""
     )
 
+    # Points from the losing draft that the Debate Judge said are worth keeping
+    debate_result   = state.get("debate_result", {})
+    incorporate     = debate_result.get("incorporate", []) if isinstance(debate_result, dict) else []
+    incorporate_str = (
+        "\n\nThe Debate Judge identified these points from the alternative draft that should be "
+        "woven into this paper where they strengthen the argument:\n"
+        + "\n".join(f"- {pt}" for pt in incorporate)
+        + "\nIncorporate them naturally — do not force them in awkwardly, "
+        "but do not ignore them. This is editing task 10a.\n"
+        if incorporate else ""
+    )
+
     messages = [
         {
             "role": "system",
@@ -962,6 +970,7 @@ def run_editor(state: dict, chain) -> dict:
                 f"{angle_instruction}"
                 f"\nWhat this format requires:\n{format_instructions}\n\n"
                 f"Source quality assessment from the Critic:\n{critique}\n\n"
+                + incorporate_str +
                 "Edit the following paper:\n\n"
                 f"{draft}\n\n"
                 "Editing tasks — complete all of them:\n"
@@ -970,8 +979,10 @@ def run_editor(state: dict, chain) -> dict:
                 "3. Remove padding, filler phrases, and repetition\n"
                 "4. Confirm the structure exactly matches the format requirements above\n"
                 "5. Confirm tone and vocabulary are appropriate for the stated audience\n"
-                f"6. Edit to reach a minimum of {target_words:,} words — "
-                "this is a hard floor. Do not reduce below it. Expand thin sections if needed.\n"
+                f"6. Edit to stay within {target_words:,}–{max_words:,} words. "
+                f"The minimum of {target_words:,} words is a hard floor — do not go below it. "
+                f"The maximum of {max_words:,} words is a hard ceiling — do not go above it. "
+                "Expand thin sections if below the floor. Cut repetitive or padded content if above the ceiling.\n"
                 "7. Soften any claim that uses language stronger than the evidence supports — "
                 "use the Critic's source ratings to identify these\n"
                 "8. Preserve all ## section headings and ### subheadings exactly as written — "
@@ -1076,13 +1087,11 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
                 f"Topic: {topic}\n"
                 f"Audience: {audience}\n"
                 f"Format: {format_style}\n"
-                f"Target length: approximately {target_words:,} words. Hard maximum: {max_words:,} words. "
-                f"Stop writing when the content is complete, even if below the target. "
-                f"Do not continue beyond {max_words:,} words under any circumstances.\n"
+                f"Target length: minimum {target_words:,} words, hard maximum {max_words:,} words. "
+                f"Do not exceed {max_words:,} words under any circumstances.\n"
                 f"{angle_instruction}"
                 f"\nFormat instructions:\n{format_instructions}\n\n"
-                f"Evidence gathered:\n{evidence_text}\n\n"
-                f"Source quality assessment from the Critic:\n{critique}\n\n"
+                f"Evidence gathered (Critic quality rating shown per question):\n{evidence_text}\n\n"
                 + (
                     f"IMPORTANT — RE-DRAFT: A previous draft was reviewed and found lacking. "
                     f"The reviewer's feedback:\n{user_feedback}\n\n"
@@ -1167,8 +1176,8 @@ def run_debate_judge(state: dict, chain) -> dict:
         {
             "role": "user",
             "content": (
-                f"DRAFT A (first 7,000 chars):\n{draft_a}\n\n"
-                f"DRAFT B (first 7,000 chars):\n{draft_b}\n\n"
+                f"DRAFT A (full draft):\n{draft_a}\n\n"
+                f"DRAFT B (full draft):\n{draft_b}\n\n"
                 "Which draft is stronger? Follow the response format exactly."
             ),
         },
@@ -1231,21 +1240,27 @@ def run_fact_checker(state: dict, chain) -> dict:
 
     On any exception: returns a clean pass so the pipeline never blocks.
     """
-    draft    = state.get("draft", "")[:30000]
-    research = state.get("research", {})
+    draft     = state.get("draft", "")[:30000]
+    research  = state.get("research", {})
     questions = state.get("questions", [])
+    critique  = state.get("critique", "")
 
-    # Build compressed source summary
+    # Parse Critic quality ratings so the Fact Checker can apply extra scrutiny to weak sources
+    critic_ratings = _parse_critic_ratings(critique, questions)
+
+    # Build compressed source summary, annotated with Critic rating
     source_lines = []
     total = 0
     for q in questions:
         hits = research.get(q, [])[:5]
+        rating = critic_ratings.get(q, "")
+        rating_note = f" [Critic: {rating}]" if rating else ""
         for hit in hits:
             if total >= 40:
                 break
             title   = hit.get("title", "Untitled")
             content = hit.get("content", "")[:1200]
-            source_lines.append(f"- {title}: {content}")
+            source_lines.append(f"- {title}{rating_note}: {content}")
             total += 1
         if total >= 40:
             break
@@ -1257,12 +1272,18 @@ def run_fact_checker(state: dict, chain) -> dict:
             "role": "system",
             "content": (
                 "You are a fact-checker. You will receive a draft paper and a set of source "
-                "summaries. Identify 15-20 specific factual claims in the draft and check each "
+                "summaries. Each source is annotated with its Critic quality rating: "
+                "Strong (primary data, peer-reviewed), Adequate (credible secondary source), "
+                "or Weak (opinion, undated, low authority). "
+                "Identify 15-20 specific factual claims in the draft and check each "
                 "one against the sources provided. Spread your checks across the full paper, "
                 "not just the opening section.\n\n"
+                "Apply extra scrutiny to claims backed only by Weak-rated sources: "
+                "if the claim cannot be confirmed by a Strong or Adequate source, "
+                "mark it Weak or Unsupported even if the Weak source mentions it in passing.\n\n"
                 "Verdict definitions:\n"
-                "Supported: the claim is directly backed by a source in the list.\n"
-                "Weak: partial support — a source is related but does not confirm the claim directly.\n"
+                "Supported: the claim is directly backed by a Strong or Adequate source.\n"
+                "Weak: partial support only, or support comes solely from a Weak-rated source.\n"
                 "Unsupported: no source in the list supports the claim.\n\n"
                 "Return a JSON object with exactly these fields:\n"
                 "claims: array of objects, each with:\n"
