@@ -91,6 +91,19 @@ SECTOR_MACRO_QUERIES = {
     "Real Estate":             "commercial real estate interest rates REIT outlook 2026",
 }
 
+# Industry-level overrides for sectors where the broad sector peer pool is
+# misleading. Lookup order: industry → sector. Add entries here whenever a
+# yfinance industry produces clearly wrong comparisons.
+INDUSTRY_PEERS = {
+    "Oil & Gas Midstream":             ["KMI", "TRP", "WMB", "OKE", "ET"],
+    "Oil & Gas Refining & Marketing":  ["PSX", "VLO", "MPC", "PBF"],
+}
+
+INDUSTRY_MACRO_QUERIES = {
+    "Oil & Gas Midstream":             "pipeline infrastructure throughput volumes FERC regulation energy transition 2026",
+    "Oil & Gas Refining & Marketing":  "refining margins crack spreads fuel demand outlook 2026",
+}
+
 TREND_YEARS = 5
 MAX_EARNINGS_QUARTERS = 8
 MAX_PEERS = 3
@@ -310,12 +323,14 @@ def _fetch_earnings_history(t: "yf.Ticker") -> tuple[list[dict], str | None]:
     return history, most_recent_date
 
 
-def _fetch_peer_data(sector: str, ticker: str) -> list[dict]:
+def _fetch_peer_data(sector: str, ticker: str, industry: str = "") -> list[dict]:
     """
-    Fetches up to MAX_PEERS peers from SECTOR_PEERS, skipping the subject
-    ticker and any candidate too incomplete to be useful for comparison.
+    Fetches up to MAX_PEERS peers. Checks INDUSTRY_PEERS first so sub-sectors
+    like midstream and refining get correct comparisons instead of the broad
+    sector pool. Falls back to SECTOR_PEERS when no industry override exists.
     """
-    candidates = [p for p in SECTOR_PEERS.get(sector, []) if p.upper() != ticker.upper()]
+    pool = INDUSTRY_PEERS.get(industry) or SECTOR_PEERS.get(sector, [])
+    candidates = [p for p in pool if p.upper() != ticker.upper()]
     peers = []
     for candidate in candidates:
         if len(peers) >= MAX_PEERS:
@@ -583,8 +598,8 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
             filing_age_days = None
 
     # ── Peers ─────────────────────────────────────────────────────────────────
-    peers = _fetch_peer_data(sector, ticker)
-    no_peer_table = sector not in SECTOR_PEERS
+    peers = _fetch_peer_data(sector, ticker, industry=industry or "")
+    no_peer_table = (industry not in INDUSTRY_PEERS) and (sector not in SECTOR_PEERS)
 
     # ── News, catalysts, macro (Tavily) ──────────────────────────────────────
     raw_news = search_tavily_only(f"{company_name} stock news", max_results=10, days=30)
@@ -599,7 +614,8 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
     )
 
     macro_context = None
-    macro_query = SECTOR_MACRO_QUERIES.get(sector)
+    # Industry-level macro query takes precedence over sector-level when available.
+    macro_query = INDUSTRY_MACRO_QUERIES.get(industry) or SECTOR_MACRO_QUERIES.get(sector)
     if macro_query:
         macro_hits = search_tavily_only(macro_query, max_results=1)
         if macro_hits:
