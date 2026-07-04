@@ -1045,9 +1045,9 @@ FACT_CHECK_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "source_agent":  {"type": "string", "enum": ["Fundamentals Analyst", "Risk Analyst"]},
+                    "source_agent":  {"type": "string"},
                     "claim_text":    {"type": "string"},
-                    "metric":        {"type": "string", "enum": list(VERIFIABLE_METRICS.keys())},
+                    "metric":        {"type": "string"},
                     "claimed_value": {"type": "string"},
                 },
                 "required": ["source_agent", "claim_text", "metric", "claimed_value"],
@@ -1198,13 +1198,15 @@ def run_fact_checker(state: dict, chain) -> dict:
 
     model = ""
     raw_claims = None
+    fact_check_error_detail = ""
     try:
         response, model = chain.complete(
             messages, timeout=90, max_tokens=3000, agent_label="Fact Checker", schema=FACT_CHECK_SCHEMA
         )
         raw_claims = json.loads(response).get("claims", [])
-    except Exception:
+    except Exception as e:
         raw_claims = None
+        fact_check_error_detail = f"{type(e).__name__}: {e}"
 
     if raw_claims is None:
         return {
@@ -1212,6 +1214,7 @@ def run_fact_checker(state: dict, chain) -> dict:
             "fact_check_summary": "Fact Checker failed to run. Claims were not verified.",
             "fact_check_flagged": True,
             "fact_check_error": True,
+            "fact_check_error_detail": fact_check_error_detail,
             "model_used": model,
             "prompt_sent": messages,
         }

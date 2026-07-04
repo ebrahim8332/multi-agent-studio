@@ -754,10 +754,14 @@ def render() -> None:
             st.session_state["m02_agent_outputs"] = agent_outputs
 
             if fc_result["fact_check_error"]:
-                st.error(
+                detail = fc_result.get("fact_check_error_detail", "")
+                error_msg = (
                     "Fact Checker failed to run — claims from Fundamentals and Risk were not "
                     "verified. This is a model/formatting failure, not a clean pass. Try Start Over."
                 )
+                if detail:
+                    error_msg += f"\n\nError detail: {detail}"
+                st.error(error_msg)
                 _agent_panel(fact_checker_ph, "Agent 6: Fact Checker", "Failed to run", STATUS_FAILED,
                              prompt=fc_result["prompt_sent"])
                 return
