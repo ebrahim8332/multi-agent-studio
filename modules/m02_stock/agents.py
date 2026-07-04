@@ -741,6 +741,7 @@ def run_fundamentals_analyst(state: dict, chain) -> dict:
     and peer valuation. No qualitative claims beyond what the data shows.
     Returns: fundamentals_analysis (str), model_used (str), prompt_sent (list)
     """
+    chain.reset()
     db = state["data_bundle"]
     time_horizon = state.get("time_horizon", "Medium-term (1-3 years)")
     supp = db.get("supplementary", {})
@@ -823,6 +824,7 @@ def run_quality_analyst(state: dict, chain) -> dict:
     long-term growth prospects. Uses two Exa searches for qualitative grounding.
     Returns: quality_analysis (str), model_used (str), prompt_sent (list)
     """
+    chain.reset()
     db = state["data_bundle"]
     time_horizon = state.get("time_horizon", "Medium-term (1-3 years)")
     company_name = db["company_name"]
@@ -905,6 +907,7 @@ def run_risk_analyst(state: dict, chain) -> dict:
     upcoming catalysts. Unrated categories are marked Unknown, never guessed.
     Returns: risk_analysis (str), model_used (str), prompt_sent (list)
     """
+    chain.reset()
     db = state["data_bundle"]
     time_horizon = state.get("time_horizon", "Medium-term (1-3 years)")
     supp = db.get("supplementary", {})
@@ -1143,6 +1146,7 @@ def run_fact_checker(state: dict, chain) -> dict:
     fact_check_error (bool — True if the LLM call/parse itself failed, a
     real failure distinct from "zero claims found"), model_used, prompt_sent
     """
+    chain.reset()
     db = state["data_bundle"]
     # Cap each analyst report at 4,000 chars. The Fact Checker only needs to find
     # numeric claims — passing the full text inflates input tokens, exhausts Groq's
@@ -1278,6 +1282,7 @@ def run_bull_advocate(state: dict, chain) -> dict:
     analyst outputs and data_bundle context — no new facts.
     Returns: bull_case (str), model_used (str), prompt_sent (list)
     """
+    chain.reset()
     db = state["data_bundle"]
     time_horizon = state.get("time_horizon", "Medium-term (1-3 years)")
 
@@ -1330,6 +1335,7 @@ def run_bear_advocate(state: dict, chain) -> dict:
     to reason from first principles, not simply invert the Bull case.
     Returns: bear_case (str), model_used (str), prompt_sent (list)
     """
+    chain.reset()
     db = state["data_bundle"]
     time_horizon = state.get("time_horizon", "Medium-term (1-3 years)")
 
@@ -1440,6 +1446,7 @@ def run_synthesizer(state: dict, chain) -> dict:
     Returns: research_note (str), evidence_summary (list), rating (str),
     confidence (str), model_used (str), prompt_sent (list)
     """
+    chain.reset()
     db = state["data_bundle"]
     time_horizon = state.get("time_horizon", "Medium-term (1-3 years)")
     quality_score = db["data_quality_score"]

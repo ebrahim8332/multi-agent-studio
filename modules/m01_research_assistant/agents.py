@@ -257,6 +257,7 @@ def run_planner(state: dict, chain, user_edits: str = "") -> dict:
     If user_edits is provided, the Planner uses them as a correction signal and replans.
     Returns: questions (list), model_used (str)
     """
+    chain.reset()
     topic        = state["topic"]
     audience     = state.get("audience", "General business audience")
     angle        = state.get("angle", "")
@@ -527,6 +528,7 @@ def run_critic(state: dict, chain) -> dict:
     Has full context: topic, audience, format, length, and format-specific source criteria.
     Returns: critique (str), model_used (str)
     """
+    chain.reset()
     topic        = state["topic"]
     audience     = state.get("audience", "General business audience")
     format_style = state.get("format_style", "White Paper / Analytical")
@@ -641,6 +643,7 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
     If user_feedback is provided (re-draft), the feedback is injected as a correction note.
     Returns: draft (str), title (str), model_used (str)
     """
+    chain.reset()
     topic        = state["topic"]
     questions    = state["questions"]
     research     = state["research"]
@@ -771,6 +774,7 @@ def run_judge(state: dict, chain) -> dict:
     Returns a structured result dict with rule_check, scores, flagged flag, and prompt_sent.
     flagged is True if any score < 3 or if the rule check failed critically.
     """
+    chain.reset()
     draft        = state.get("draft", "")
     topic        = state.get("topic", "")
     questions    = state.get("questions", [])
@@ -923,6 +927,7 @@ def run_editor(state: dict, chain) -> dict:
     tightens structure, removes padding. Has full context from the pipeline.
     Returns: final (str), model_used (str)
     """
+    chain.reset()
     topic        = state["topic"]
     draft        = state["draft"]
     title        = state.get("title", "")
@@ -1015,6 +1020,7 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
     Uses the same evidence and format as Writer A.
     Returns: draft_b (str), title_b (str), model_used_b (str), prompt_sent_b (list)
     """
+    chain.reset()
     topic        = state["topic"]
     questions    = state["questions"]
     research     = state["research"]
@@ -1156,6 +1162,7 @@ def run_debate_judge(state: dict, chain) -> dict:
         winner, reasoning, incorporate (list), synthesis, model_used, prompt_sent
     On exception: returns safe default (winner="A").
     """
+    chain.reset()
     draft_a = state.get("draft", "")[:28000]
     draft_b = state.get("draft_b", "")[:28000]
 
@@ -1243,6 +1250,7 @@ def run_fact_checker(state: dict, chain) -> dict:
 
     On any exception: returns a clean pass so the pipeline never blocks.
     """
+    chain.reset()
     draft     = state.get("draft", "")[:30000]
     research  = state.get("research", {})
     questions = state.get("questions", [])

@@ -165,6 +165,13 @@ class FallbackChain:
             + (f" Last attempts: {details}" if details else "")
         )
 
+    def reset(self):
+        """Reset the provider lock so the next call starts from model 0.
+        Call this at the start of each major agent operation so rate limits
+        that cleared since the last agent are tried again."""
+        module_lock_key = f"{self.call_log_key.replace('_call_log', '')}_locked_provider"
+        self.session_state.pop(module_lock_key, None)
+
     @property
     def locked_model(self) -> str | None:
         """Returns the name of the currently locked model, or None if not yet locked."""
