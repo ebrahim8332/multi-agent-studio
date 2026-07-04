@@ -565,6 +565,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 if name in ph:
                     _agent_panel(ph[name], label, desc, STATUS_FAILED)
             st.error(f"Researcher failed: {e}")
+            st.session_state["m01_phase"] = "idle"
             return
 
         researcher_out    = _format_researcher_output(full_state)
@@ -739,6 +740,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
                 if name in ph:
                     _agent_panel(ph[name], label, desc, STATUS_FAILED)
             st.error(f"Critic failed: {e}")
+            st.session_state["m01_phase"] = "idle"
             return
 
         critic_out    = result.get("critique", "")
@@ -1122,8 +1124,10 @@ div[data-baseweb="select"] * { cursor: pointer; }
         except Exception:
             fc_result_dict = {
                 "fact_check_result": {
-                    "claims": [], "summary": "", "unsupported_count": 0,
-                    "weak_count": 0, "flagged": False, "model_used": "", "prompt_sent": [],
+                    "claims": [], "unsupported_count": 0, "weak_count": 0,
+                    "flagged": True, "error": True,
+                    "summary": "Fact check failed — the AI could not complete its review. Human review required.",
+                    "model_used": "", "prompt_sent": [],
                 }
             }
         full_state.update(fc_result_dict)
@@ -1392,6 +1396,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
             _agent_panel(judge_ph,  "Agent 7: Judge",  "", STATUS_FAILED)
             _agent_panel(editor_ph, "Agent 8: Editor", "", STATUS_FAILED)
             st.error(f"Judge failed: {e}")
+            st.session_state["m01_phase"] = "idle"
             return
 
         # Double-run on borderline scores — any dimension scoring exactly 3 is unstable
@@ -1958,6 +1963,11 @@ def _format_judge_output(result: dict) -> str:
 
 def _show_judge_scorecard(result: dict) -> None:
     """Renders the Judge scorecard using st.progress bars."""
+    if result.get("error"):
+        st.warning(
+            "The Judge could not complete its evaluation — the AI returned an invalid response. "
+            "Scores below are placeholders, not real assessments. Human review is required."
+        )
     rule   = result.get("rule_check", {})
     scores = result.get("scores", {})
 
@@ -2206,6 +2216,13 @@ def _show_download() -> None:
     slug     = topic.lower()[:40].replace(" ", "-").replace("/", "-")
     slug     = "".join(c for c in slug if c.isalnum() or c == "-")
     filename = f"research-{slug}-v1.docx"
+
+    if not full_state.get("final", "").strip():
+        st.warning(
+            "The Editor did not produce a final draft. "
+            "The paper cannot be downloaded. Check the error messages above and run again."
+        )
+        return
 
     doc_bytes = build_research_doc(full_state)
     st.download_button(

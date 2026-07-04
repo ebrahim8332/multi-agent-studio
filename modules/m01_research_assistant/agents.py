@@ -205,15 +205,16 @@ def _parse_critic_ratings(critique: str, questions: list) -> dict:
     Returns: {question_text: "Strong" | "Adequate" | "Weak"}
     """
     ratings = {}
-    blocks = re.split(r"\nQuestion:", "\n" + critique)
+    # Case-insensitive split handles "Question:", "question:", "QUESTION:", etc.
+    blocks = re.split(r"\n(?:question):", "\n" + critique, flags=re.IGNORECASE)
     blocks = [b.strip() for b in blocks if b.strip()]
 
     for i, question in enumerate(questions):
+        rating = "Adequate"  # safe default if block is missing or unparseable
         if i < len(blocks):
             m = re.search(r"Rating:\s*(Strong|Adequate|Weak)", blocks[i], re.IGNORECASE)
-            rating = m.group(1).capitalize() if m else "Adequate"
-        else:
-            rating = "Adequate"
+            if m:
+                rating = m.group(1).capitalize()
         ratings[question] = rating
 
     return ratings
@@ -873,6 +874,7 @@ def run_judge(state: dict, chain) -> dict:
     scores           = {}
     model            = ""
     judge_confidence = "medium"
+    judge_error = False
     try:
         response, model = chain.complete(messages, agent_label="Judge", schema=JUDGE_SCHEMA)
         data = json.loads(response)
@@ -889,7 +891,7 @@ def run_judge(state: dict, chain) -> dict:
         if raw_conf in ("high", "medium", "low"):
             judge_confidence = raw_conf
     except Exception:
-        pass
+        judge_error = True
 
     # Fill any missing dimensions — mark as failed, not neutral
     for dim in ("completeness", "argument_quality", "source_integration", "format_adherence"):
@@ -907,6 +909,7 @@ def run_judge(state: dict, chain) -> dict:
         "scores":      scores,
         "flagged":     flagged,
         "confidence":  judge_confidence,
+        "error":       judge_error,
         "model_used":  model,
         "prompt_sent": messages,
     }
@@ -1176,8 +1179,8 @@ def run_debate_judge(state: dict, chain) -> dict:
         {
             "role": "user",
             "content": (
-                f"DRAFT A (full draft):\n{draft_a}\n\n"
-                f"DRAFT B (full draft):\n{draft_b}\n\n"
+                f"DRAFT A (up to 28,000 characters — longer drafts are cut at that limit):\n{draft_a}\n\n"
+                f"DRAFT B (up to 28,000 characters — longer drafts are cut at that limit):\n{draft_b}\n\n"
                 "Which draft is stronger? Follow the response format exactly."
             ),
         },
@@ -1300,9 +1303,9 @@ def run_fact_checker(state: dict, chain) -> dict:
         {
             "role": "user",
             "content": (
-                f"Draft (up to 30,000 chars):\n{draft}\n\n"
+                f"Draft (up to 30,000 characters — if the paper is longer, the remainder has been cut):\n{draft}\n\n"
                 f"Source evidence:\n{sources_text}\n\n"
-                "Identify 15-20 specific factual claims spread across the full paper and check each one."
+                "Identify 15-20 specific factual claims spread across the visible portion of the paper and check each one."
             ),
         },
     ]
