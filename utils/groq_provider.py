@@ -88,7 +88,15 @@ class GroqProvider(BaseProvider):
         input_tokens  = getattr(usage, "prompt_tokens",     0) or 0
         output_tokens = getattr(usage, "completion_tokens", 0) or 0
 
-        text = response.choices[0].message.content or ""
+        choice = response.choices[0]
+        # finish_reason == "length" means Groq hit the token cap and truncated the
+        # response. This is silent truncation — no exception, just broken output.
+        # Raise FallbackTrigger so the chain moves to the next model.
+        if getattr(choice, "finish_reason", None) == "length":
+            raise FallbackTrigger(
+                f"Groq output truncated (finish_reason=length) on {self.model_name}"
+            )
+        text = choice.message.content or ""
         # Some Groq models (e.g. qwen3.6-27b) prepend a <think>...</think> block.
         # Strip it so pipeline agents receive clean prose.
         # Case 1: complete block — take everything after </think>

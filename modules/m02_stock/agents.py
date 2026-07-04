@@ -1144,8 +1144,14 @@ def run_fact_checker(state: dict, chain) -> dict:
     real failure distinct from "zero claims found"), model_used, prompt_sent
     """
     db = state["data_bundle"]
-    fundamentals_text = state.get("fundamentals_analysis", "")
-    risk_text = state.get("risk_analysis", "")
+    # Cap each analyst report at 4,000 chars. The Fact Checker only needs to find
+    # numeric claims — passing the full text inflates input tokens, exhausts Groq's
+    # per-minute budget, and causes silent output truncation.
+    _MAX_FC_INPUT = 4000
+    _fundamentals_raw = state.get("fundamentals_analysis", "")
+    _risk_raw = state.get("risk_analysis", "")
+    fundamentals_text = _fundamentals_raw[:_MAX_FC_INPUT] + (" [truncated]" if len(_fundamentals_raw) > _MAX_FC_INPUT else "")
+    risk_text = _risk_raw[:_MAX_FC_INPUT] + (" [truncated]" if len(_risk_raw) > _MAX_FC_INPUT else "")
 
     # pe_value's label is dynamic, not static: only ONE P/E convention (trailing
     # or forward) is ever fetched and shown to the analysts (see pe_used/pe_value
