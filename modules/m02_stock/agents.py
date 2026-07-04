@@ -1078,8 +1078,20 @@ FACT_CHECK_SCHEMA = {
 
 
 def _get_true_value(db: dict, metric: str):
-    """Ground-truth lookup for a verifiable metric, checking both the top
-    level of data_bundle and the supplementary dict."""
+    """Ground-truth lookup for a verifiable metric.
+
+    Lookup order:
+    1. Most recent annual value from trend_data (analysts cite annual figures,
+       not TTM — aligning here removes false mismatches caused by TTM vs annual
+       timing differences for metrics like gross_margin, operating_margin, ROE).
+    2. Top-level data_bundle field (TTM for margins, exact for ratios/prices).
+    3. Supplementary dict (dividend_yield, beta, etc).
+    """
+    trend_data = db.get("trend_data", [])
+    if trend_data:
+        latest = trend_data[-1]
+        if metric in latest and latest[metric] is not None:
+            return latest[metric]
     if metric in db and db[metric] is not None:
         return db[metric]
     return db.get("supplementary", {}).get(metric)
