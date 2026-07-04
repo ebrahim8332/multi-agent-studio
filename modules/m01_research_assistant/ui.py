@@ -1522,7 +1522,10 @@ div[data-baseweb="select"] * { cursor: pointer; }
             elif rule_fail or low_dims:
                 issues = []
                 if not rule.get("word_count_ok", True):
-                    issues.append(f"word count short ({rule.get('word_count', 0):,} vs {rule.get('word_count_target', 0):,} target)")
+                    if rule.get("word_count_over", False):
+                        issues.append(f"word count over maximum ({rule.get('word_count', 0):,} vs {rule.get('word_count_max', 0):,} max)")
+                    else:
+                        issues.append(f"word count short ({rule.get('word_count', 0):,} vs {rule.get('word_count_target', 0):,} target)")
                 if not rule.get("sections_ok", True):
                     issues.append(f"too few sections ({rule.get('section_count', 0)} vs {rule.get('min_sections', 0)} minimum)")
                 for k, v in low_dims:
@@ -1959,12 +1962,21 @@ def _show_judge_scorecard(result: dict) -> None:
     scores = result.get("scores", {})
 
     st.markdown("**Rule check**")
-    wc_ok  = rule.get("word_count_ok", True)
-    sec_ok = rule.get("sections_ok", True)
+    wc_ok   = rule.get("word_count_ok", True)
+    wc_over = rule.get("word_count_over", False)
+    sec_ok  = rule.get("sections_ok", True)
     col1, col2 = st.columns(2)
     with col1:
-        icon = "✅" if wc_ok else "❌"
-        st.caption(f"{icon} Words: {rule.get('word_count', 0):,} / {rule.get('word_count_target', 0):,} target")
+        if wc_ok:
+            icon = "✅"
+            wc_label = f"Words: {rule.get('word_count', 0):,} / {rule.get('word_count_target', 0):,} target"
+        elif wc_over:
+            icon = "❌"
+            wc_label = f"Words: {rule.get('word_count', 0):,} — over max ({rule.get('word_count_max', 0):,})"
+        else:
+            icon = "❌"
+            wc_label = f"Words: {rule.get('word_count', 0):,} / {rule.get('word_count_target', 0):,} target"
+        st.caption(f"{icon} {wc_label}")
     with col2:
         icon = "✅" if sec_ok else "❌"
         st.caption(f"{icon} Sections: {rule.get('section_count', 0)} / {rule.get('min_sections', 0)} minimum")
@@ -2007,12 +2019,21 @@ def _build_redraft_suggestion(judge_result: dict) -> str:
     notes = []
 
     if not rule.get("word_count_ok", True):
-        actual = rule.get("word_count", 0)
-        target = rule.get("word_count_target", 0)
-        notes.append(
-            f"The paper is {actual:,} words — well below the {target:,} word target. "
-            "Expand every section with more depth, evidence, and analysis. Do not stop early."
-        )
+        actual  = rule.get("word_count", 0)
+        target  = rule.get("word_count_target", 0)
+        max_wc  = rule.get("word_count_max", 0)
+        if rule.get("word_count_over", False):
+            notes.append(
+                f"The paper is {actual:,} words — well over the {max_wc:,} word maximum. "
+                f"Target is {target:,} words. Cut aggressively: remove padding, redundant explanations, "
+                "and any section that does not add new substance. Do not simply shorten sentences — "
+                "remove whole paragraphs that repeat points already made."
+            )
+        else:
+            notes.append(
+                f"The paper is {actual:,} words — well below the {target:,} word target. "
+                "Expand every section with more depth, evidence, and analysis. Do not stop early."
+            )
 
     if not rule.get("sections_ok", True):
         actual  = rule.get("section_count", 0)

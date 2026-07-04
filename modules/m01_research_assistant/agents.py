@@ -60,11 +60,13 @@ DEBATE_JUDGE_SCHEMA = {
     "required": ["winner", "reasoning", "incorporate", "synthesis"],
 }
 
-# Word count targets for Judge rule check: {length_string: (target_words, min_acceptable)}
+# Word count targets for Judge rule check: {length_string: (target_words, min_acceptable, max_acceptable)}
+# max_acceptable is a hard ceiling — papers over this are flagged by the Judge and the Writer
+# is told not to exceed it. Set at roughly 35% above the target to allow depth without runaway length.
 LENGTH_WORD_TARGETS = {
-    "Short brief (~800 words, 1-2 pages)":       (800,  400),
-    "Standard length (~2,000 words, 4-5 pages)": (2000, 1000),
-    "Full report (~4,500 words, 9-11 pages)":    (4500, 2000),
+    "Short brief (~800 words, 1-2 pages)":       (800,  400,  1200),
+    "Standard length (~2,000 words, 4-5 pages)": (2000, 1000, 3000),
+    "Full report (~4,500 words, 9-11 pages)":    (4500, 2000, 6000),
 }
 
 # Minimum section headings expected for each length
@@ -630,7 +632,7 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
     angle        = state.get("angle", "")
 
     format_instructions = FORMAT_INSTRUCTIONS.get(format_style, FORMAT_INSTRUCTIONS["McKinsey / Bain"])
-    target_words, _     = LENGTH_WORD_TARGETS.get(length, (2000, 1000))
+    target_words, _, max_words = LENGTH_WORD_TARGETS.get(length, (2000, 1000, 3000))
 
     angle_instruction = (
         f"Specific angle to maintain throughout: {angle}\n"
@@ -682,7 +684,9 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
                 f"Topic: {topic}\n"
                 f"Audience: {audience}\n"
                 f"Format: {format_style}\n"
-                f"Target length: minimum {target_words:,} words\n"
+                f"Target length: approximately {target_words:,} words. Hard maximum: {max_words:,} words. "
+                f"Stop writing when the content is complete, even if below the target. "
+                f"Do not continue beyond {max_words:,} words under any circumstances.\n"
                 f"{angle_instruction}"
                 f"\nFormat instructions:\n{format_instructions}\n\n"
                 f"Evidence gathered:\n{evidence_text}\n\n"
@@ -762,8 +766,8 @@ def run_judge(state: dict, chain) -> dict:
 
     # ── Pass 1: Rule check ─────────────────────────────────────────────────────
     words          = len(draft.split())
-    target_words, min_words = LENGTH_WORD_TARGETS.get(length, (2000, 1000))
-    word_count_ok  = words >= min_words
+    target_words, min_words, max_words = LENGTH_WORD_TARGETS.get(length, (2000, 1000, 3000))
+    word_count_ok  = min_words <= words <= max_words
 
     section_count  = sum(1 for line in draft.split("\n") if line.strip().startswith("#"))
     min_sections   = LENGTH_SECTION_TARGETS.get(length, 3)
@@ -772,14 +776,16 @@ def run_judge(state: dict, chain) -> dict:
     rule_check = {
         "word_count":        words,
         "word_count_target": target_words,
+        "word_count_max":    max_words,
         "word_count_ok":     word_count_ok,
+        "word_count_over":   words > max_words,
         "section_count":     section_count,
         "min_sections":      min_sections,
         "sections_ok":       sections_ok,
     }
 
     # ── Pass 2: LLM evaluation ─────────────────────────────────────────────────
-    target_words, _ = LENGTH_WORD_TARGETS.get(length, (2000, 1000))
+    target_words, _, max_words = LENGTH_WORD_TARGETS.get(length, (2000, 1000, 3000))
     format_instructions = FORMAT_INSTRUCTIONS.get(format_style, "")
 
     messages = [
@@ -833,9 +839,13 @@ def run_judge(state: dict, chain) -> dict:
             "content": (
                 f"Topic: {topic}\n"
                 f"Target format: {format_style}\n"
-                f"Target length: {target_words:,} words minimum\n"
+                f"Target length: {target_words:,} words (acceptable range: {min_words:,} – {max_words:,} words)\n"
                 f"Actual word count: {words:,} words — "
-                + ("requirement met.\n" if word_count_ok else f"requirement NOT met (minimum acceptable: {min_words:,}).\n")
+                + (
+                    "within acceptable range.\n" if word_count_ok
+                    else (f"OVER the maximum ({max_words:,} words). The paper is too long.\n" if words > max_words
+                          else f"UNDER the minimum ({min_words:,} words). The paper is too short.\n")
+                )
                 + (f"Required angle: {angle}\n" if angle else "")
                 + f"\nResearch questions the paper must address:\n"
                 + "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
@@ -906,7 +916,7 @@ def run_editor(state: dict, chain) -> dict:
     angle        = state.get("angle", "")
 
     format_instructions = FORMAT_INSTRUCTIONS.get(format_style, "")
-    target_words, _     = LENGTH_WORD_TARGETS.get(length, (2000, 1000))
+    target_words, _, max_words = LENGTH_WORD_TARGETS.get(length, (2000, 1000, 3000))
 
     angle_instruction = (
         f"The paper should maintain this specific angle throughout: {angle}\n"
@@ -983,7 +993,7 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
     angle        = state.get("angle", "")
 
     format_instructions = FORMAT_INSTRUCTIONS.get(format_style, FORMAT_INSTRUCTIONS["McKinsey / Bain"])
-    target_words, _     = LENGTH_WORD_TARGETS.get(length, (2000, 1000))
+    target_words, _, max_words = LENGTH_WORD_TARGETS.get(length, (2000, 1000, 3000))
 
     angle_instruction = (
         f"Specific angle to maintain throughout: {angle}\n"
@@ -1048,7 +1058,9 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
                 f"Topic: {topic}\n"
                 f"Audience: {audience}\n"
                 f"Format: {format_style}\n"
-                f"Target length: minimum {target_words:,} words\n"
+                f"Target length: approximately {target_words:,} words. Hard maximum: {max_words:,} words. "
+                f"Stop writing when the content is complete, even if below the target. "
+                f"Do not continue beyond {max_words:,} words under any circumstances.\n"
                 f"{angle_instruction}"
                 f"\nFormat instructions:\n{format_instructions}\n\n"
                 f"Evidence gathered:\n{evidence_text}\n\n"
