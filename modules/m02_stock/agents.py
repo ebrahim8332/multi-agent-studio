@@ -1205,14 +1205,22 @@ def run_fact_checker(state: dict, chain) -> dict:
     model = ""
     raw_claims = None
     fact_check_error_detail = ""
-    try:
-        response, model = chain.complete(
-            messages, timeout=90, max_tokens=6000, agent_label="Fact Checker", schema=FACT_CHECK_SCHEMA
-        )
-        raw_claims = json.loads(response).get("claims", [])
-    except Exception as e:
-        raw_claims = None
-        fact_check_error_detail = f"{type(e).__name__}: {e}"
+    # Two attempts: malformed JSON is often transient. A retry on the same or next
+    # model succeeds most of the time without user involvement.
+    for _attempt in range(2):
+        try:
+            response, model = chain.complete(
+                messages, timeout=90, max_tokens=6000, agent_label="Fact Checker", schema=FACT_CHECK_SCHEMA
+            )
+            raw_claims = json.loads(response).get("claims", [])
+            fact_check_error_detail = ""
+            break  # success — exit retry loop
+        except json.JSONDecodeError as e:
+            fact_check_error_detail = f"{type(e).__name__}: {e}"
+            # retry once — don't break
+        except Exception as e:
+            fact_check_error_detail = f"{type(e).__name__}: {e}"
+            break  # non-JSON error, retrying won't help
 
     if raw_claims is None:
         return {
