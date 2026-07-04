@@ -25,6 +25,15 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
+# Imported at module level to avoid a circular import at runtime.
+# utils/ is the foundation layer — modules import from utils, not the reverse.
+# This import is guarded so the rest of doc_builder works even if m02 is not present.
+try:
+    from modules.m02_stock.agents import format_metric_value as _format_metric_value
+except ImportError:
+    def _format_metric_value(metric: str, value) -> str:
+        return str(value) if value is not None else "n/a"
+
 
 # ── Color palette ─────────────────────────────────────────────────────────────
 NAVY   = RGBColor(0x1E, 0x3A, 0x5F)   # H1 + Title
@@ -410,7 +419,7 @@ def build_stock_research_doc(state: dict) -> bytes:
     # same claim-by-claim detail the on-screen gate shows before proceeding.
     fc_claims = state.get("fact_check_claims", [])
     if fc_claims:
-        from modules.m02_stock.agents import format_metric_value
+        format_metric_value = _format_metric_value
 
         doc.add_heading("Fact Check Results", level=1)
         doc.add_paragraph(state.get("fact_check_summary", ""))

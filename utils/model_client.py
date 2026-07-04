@@ -129,7 +129,10 @@ class FallbackChain:
         """Returns (response_text, model_name) from the first provider that succeeds.
         Also accumulates token counts into session_state for the run summary.
         When schema is provided, Gemini enforces it at the API level; Groq uses JSON mode."""
-        start = self.session_state.get(SESSION_LOCK_KEY, 0)
+        # Lock key is module-specific so m01 and m02 don't share provider state.
+        # If both modules run in the same browser session, each locks to its own index.
+        module_lock_key = f"{self.call_log_key.replace('_call_log', '')}_locked_provider"
+        start = self.session_state.get(module_lock_key, 0)
         errors = []
         for i in range(start, len(self.providers)):
             provider = self.providers[i]
@@ -137,7 +140,7 @@ class FallbackChain:
                 text, input_tok, output_tok = provider.complete(
                     messages, timeout=timeout, max_tokens=max_tokens, schema=schema
                 )
-                self.session_state[SESSION_LOCK_KEY] = i
+                self.session_state[module_lock_key] = i
                 self.session_state["locked_model_name"] = provider.model_name
 
                 # Accumulate usage
@@ -165,7 +168,8 @@ class FallbackChain:
     @property
     def locked_model(self) -> str | None:
         """Returns the name of the currently locked model, or None if not yet locked."""
-        locked_index = self.session_state.get(SESSION_LOCK_KEY)
+        module_lock_key = f"{self.call_log_key.replace('_call_log', '')}_locked_provider"
+        locked_index = self.session_state.get(module_lock_key)
         if locked_index is not None and locked_index < len(self.providers):
             return self.providers[locked_index].model_name
         return None

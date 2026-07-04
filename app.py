@@ -77,9 +77,16 @@ else:
     # When a module is built, its import path goes in MODULES above.
     # This block dynamically loads and renders it.
     import importlib
+    import traceback
     module_path = MODULES[selection]
     try:
         mod = importlib.import_module(f"modules.{module_path}.ui")
-        mod.render()
     except Exception as e:
         st.error(f"Module failed to load: {e}")
+        st.stop()
+    try:
+        mod.render()
+    except Exception as e:
+        st.error(f"An error occurred in this module: {e}")
+        with st.expander("Full error details"):
+            st.code(traceback.format_exc())

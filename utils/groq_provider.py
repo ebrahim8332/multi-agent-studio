@@ -35,8 +35,8 @@ class GroqProvider(BaseProvider):
             raise FallbackTrigger(f"Groq rate limit on {self.model_name}") from e
 
         except groq_errors.APIStatusError as e:
-            if e.status_code == 503:
-                raise FallbackTrigger(f"Groq model unavailable: {self.model_name}") from e
+            if e.status_code in (500, 503):
+                raise FallbackTrigger(f"Groq server error {e.status_code} on {self.model_name}") from e
             if e.status_code == 413:
                 raise FallbackTrigger(f"Groq request too large for {self.model_name}") from e
             raise  # 401 auth errors surface as-is
@@ -45,7 +45,9 @@ class GroqProvider(BaseProvider):
             raise FallbackTrigger(f"Groq timeout on {self.model_name}") from e
 
         except groq_errors.APIConnectionError as e:
-            # One retry before falling back
+            # One retry with a brief pause before falling back
+            import time
+            time.sleep(1)
             try:
                 return self._call(messages, timeout, temperature, max_tokens)
             except Exception as retry_error:

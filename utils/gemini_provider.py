@@ -1,4 +1,5 @@
 import os
+import concurrent.futures
 from google import genai
 from google.genai import types, errors as gemini_errors
 
@@ -76,11 +77,24 @@ class GeminiProvider(BaseProvider):
             response_schema=schema if schema else None,
         )
 
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=gemini_contents,
-            config=config,
-        )
+        # Gemini SDK does not accept a timeout parameter — wrap in a thread
+        # so we can enforce the caller's timeout. Without this, gemini-2.5-pro
+        # on the free tier silently hangs with no response and no error.
+        def _generate():
+            return self.client.models.generate_content(
+                model=self.model_name,
+                contents=gemini_contents,
+                config=config,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_generate)
+            try:
+                response = future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                raise FallbackTrigger(
+                    f"Gemini timeout ({timeout}s) on {self.model_name}"
+                )
 
         # Extract token counts from usage metadata
         usage = getattr(response, "usage_metadata", None)
