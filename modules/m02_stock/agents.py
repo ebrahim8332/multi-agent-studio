@@ -554,7 +554,7 @@ def run_data_agent(ticker: str, company_name: str) -> dict:
     supplementary = {
         "eps_trailing": _safe_float(info.get("trailingEps")),
         "price_to_book": _safe_float(info.get("priceToBook")),
-        "dividend_yield": _safe_float(info.get("dividendYield")),
+        "dividend_yield": _safe_float(info.get("dividendYield")) if (_safe_float(info.get("dividendYield")) or 0) <= 1.0 else None,
         "beta": _safe_float(info.get("beta")),
         "short_percent_of_float": _safe_float(info.get("shortPercentOfFloat")),
         "institutional_ownership_pct": _safe_float(info.get("heldPercentInstitutions")),
