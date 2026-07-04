@@ -229,6 +229,8 @@ Writing rules — follow exactly:
   unparalleled, "it is worth noting", "in today's rapidly evolving landscape".
 - Do not open with broad scene-setting. Get to the point in the first sentence.
 - No motivational closing paragraph. End when the content is done.
+- Do not repeat the same phrase, sentence opener, or transition word in more than one
+  section of the paper. Each section must open and flow with its own language.
 """
 
 
@@ -688,7 +690,12 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
                 + (
                     f"IMPORTANT — RE-DRAFT: A previous draft was reviewed and found lacking. "
                     f"The reviewer's feedback:\n{user_feedback}\n\n"
-                    f"Address all feedback points in this new draft.\n\n"
+                    f"Address all feedback points in this new draft. "
+                    f"If the feedback names specific repeated phrases in quotes, you must: "
+                    f"(1) search every section of the paper for each named phrase, "
+                    f"(2) rewrite every instance using different language, and "
+                    f"(3) check section openings and transitions — these are the most common "
+                    f"locations where phrases repeat. Do not leave any named phrase unchanged.\n\n"
                     if user_feedback else ""
                 ) +
                 "Begin your response with a single line in this exact format:\n"
@@ -795,7 +802,13 @@ def run_judge(state: dict, chain) -> dict:
                 "SOURCE_INTEGRATION: are sources cited in context, with their quality accurately "
                 "reflected? Are Weak-rated sources treated with appropriate caution?\n"
                 "FORMAT_ADHERENCE: does the structure, tone, and organisation match the required "
-                "format exactly? Check against the format instructions provided.\n\n"
+                "format exactly? Check against the format instructions provided. "
+                "Also check for repeated phrases, sentence openers, or transitions that appear "
+                "in more than one section — this is a common quality failure. "
+                "IMPORTANT: if you find repetitive phrasing, your note MUST quote the specific "
+                "repeated phrases verbatim (e.g. 'The phrase \"this approach\" appears in every "
+                "section introduction'). A note that says only 'contains repetitive phrasing' "
+                "without naming the phrases is not actionable and will not be accepted.\n\n"
                 "Scoring anchors — apply to all dimensions:\n"
                 "5 = Excellent. Genuinely strong. No significant weaknesses.\n"
                 "4 = Good. One minor weakness that does not undermine the work.\n"
@@ -1043,7 +1056,12 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
                 + (
                     f"IMPORTANT — RE-DRAFT: A previous draft was reviewed and found lacking. "
                     f"The reviewer's feedback:\n{user_feedback}\n\n"
-                    f"Address all feedback points in this new draft.\n\n"
+                    f"Address all feedback points in this new draft. "
+                    f"If the feedback names specific repeated phrases in quotes, you must: "
+                    f"(1) search every section of the paper for each named phrase, "
+                    f"(2) rewrite every instance using different language, and "
+                    f"(3) check section openings and transitions — these are the most common "
+                    f"locations where phrases repeat. Do not leave any named phrase unchanged.\n\n"
                     if user_feedback else ""
                 ) +
                 "Begin your response with a single line in this exact format:\n"
