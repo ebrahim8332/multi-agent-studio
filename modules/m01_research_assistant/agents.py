@@ -238,6 +238,69 @@ Writing rules — follow exactly:
 """
 
 
+# Alnoor Ebrahim's personal writing voice, from the ae-write-skill. Injected
+# only into the Editor's prompt, not the Writers'. The Writers' job is neutral
+# synthesis from evidence; this is the final pass that makes the polished
+# paper sound like Alnoor specifically, not generic business writing.
+AE_VOICE_RULES = """
+Voice rules — follow exactly. This is Alnoor Ebrahim's personal writing voice:
+
+Banned words and phrases — never use, they signal AI-generated filler:
+leverage (as a verb), seamlessly, unparalleled, delve, cutting-edge (unless
+quoting a spec sheet), transformative, empower/empowering, foster/fostering,
+ecosystem (business context), paramount, unlock/unlock opportunities,
+thought leadership, actionable insights, comprehensive suite of solutions,
+state-of-the-art (unless it genuinely is), multifold/manifold advantages,
+"in today's rapidly evolving landscape", "it is worth noting",
+"it could be argued", "one might consider", "designed to inform", "core argument".
+If more than two of these appear anywhere in the paper, revise before finishing.
+
+Sentence structure: one idea per sentence, under 20 words where possible.
+If a sentence runs past 20 words, break it into two.
+
+Tone: business formal, direct. State the position, do not circle around it.
+Do not hedge. If something is true, say it. If it is uncertain, say that
+plainly, not with phrases like "it could be argued."
+
+No em dashes anywhere. Comma, colon, or period instead. No exceptions.
+
+Introductions: get to the point in the first sentence. No restating the topic,
+no scene-setting about the state of the industry, no throat-clearing.
+Bad: "In an era defined by rapid technological advancements..."
+Good: "This paper summarizes the key findings of our investigation."
+
+Conclusions: label the final section "Conclusions" or "Key Takeaways" —
+never "In Conclusion" or "Final Thoughts." Add a final synthesis, not a
+repetition of what was already said.
+Bad conclusion: "In conclusion, as we have seen throughout this paper, X
+offers a transformative and unparalleled approach that empowers
+organizations to seamlessly integrate cutting-edge solutions."
+Good conclusion: "X does what no other approach available today does.
+Two decisions follow from that. First, [specific next step]. Second,
+[specific next step]."
+
+Repetition: say something once. Do not restate the same point in different
+words across paragraphs. If an idea appeared in the executive summary, the
+body should develop it, not repeat it in slightly reworded form.
+
+Formatting: bold only for genuinely critical terms, not to make the page
+look active. One or two header levels, never more. Bullets kept to one or
+two lines each.
+
+Voice: short paragraphs, often two to four sentences. Facts and opinions
+both stated plainly, not hedged. Numbers used precisely. No filler between
+data points.
+
+Before finishing, run this checklist against your own output:
+- More than two banned phrases anywhere? Revise.
+- Does the introduction reach the point in the first sentence?
+- Any sentence over 20 words that could be split?
+- Any em dashes? Replace them.
+- Is the executive summary three to five sentences, no more?
+- Does the conclusion add synthesis, not repeat the body?
+"""
+
+
 # Citation rules injected into both Writer prompts. Every source in the evidence
 # block is pre-tagged with an ID like [S3] by _build_evidence_text() below — this
 # tells the Writer how to use those tags, not just what they mean.
@@ -1058,7 +1121,7 @@ def run_editor(state: dict, chain) -> dict:
                 "You are a senior editor. Your job is to polish research papers. "
                 "You do not change substance or restructure arguments — only improve "
                 "language quality, sentence clarity, and structure compliance. "
-                f"{STYLE_RULES}"
+                f"{AE_VOICE_RULES}"
             ),
         },
         {
@@ -1100,6 +1163,11 @@ def run_editor(state: dict, chain) -> dict:
                 "that contains a citation tag, keep the tag attached to the same claim. "
                 "These tags let the reader trace every figure back to its source — treat "
                 "them as part of the sentence, not as formatting to clean up.\n"
+                + "12. Before returning your answer, run the voice checklist from the system "
+                "message against your own draft: banned phrases, intro reaching the point "
+                "immediately, sentences over 20 words, em dashes, executive summary length, "
+                "and whether the conclusion adds synthesis rather than repeating the body. "
+                "Fix anything that fails before finishing.\n"
                 + "\n"
                 "Return the complete edited paper from start to finish. "
                 "Do not stop mid-section. Do not summarise or skip sections."

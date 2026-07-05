@@ -1,6 +1,6 @@
 # PROJECT.md — multi-agent-studio
 
-## Status: Module 1 live — claim-level citation system added. Module 2 (Stock Analyser) live — now 9 agents after adding a Fact Checker (Agent 6) following a human-in-the-loop reliability review.
+## Status: Module 1 live — claim-level citation system added, Editor now applies Alnoor's personal voice (ae-write-skill). Module 2 (Stock Analyser) live — now 9 agents after adding a Fact Checker (Agent 6) following a human-in-the-loop reliability review.
 ## Last updated: 2026-07-05
 
 ---
@@ -99,6 +99,22 @@
 
 ## Session Notes
 
+### Session 15 — 2026-07-05 (Editor now writes in Alnoor's personal voice)
+
+Alnoor asked whether his personal writing voice (already codified as the `ae-write-skill` he uses across Claude Code sessions) could be injected into the Research Assistant's final Editor pass, rather than the generic AI-writing-style rules already baked in.
+
+Compared the existing `STYLE_RULES` (already injected into Writer/Writer B/Editor) against the full skill content and found real gaps: the banned-phrase list was a subset, formatting rules (bold sparingly, header levels, bullet length) weren't represented at all, conclusion labeling ("Conclusions"/"Key Takeaways", never "In Conclusion") was missing, and the repetition rule only caught repeated phrasing, not repeated substance reworded across paragraphs. Biggest gap: the skill's "Voice quick reference" (short paragraphs, plainly stated facts and opinions, honest recommendation framing) wasn't represented at all — that's the part that actually makes output sound like Alnoor rather than just "not sound like generic AI."
+
+**Design decision — scope to the Editor only, not the Writers:** the Writers' job is neutral evidence synthesis (the White Paper format explicitly avoids prescribing recommendations); Alnoor's voice is more opinionated and direct than that. Applying it only at the final Editor pass avoids the two fighting each other mid-document.
+
+**Design decision — always-on, not audience-conditional or a UI toggle.** Alnoor's own call after I gave a direct recommendation instead of just listing options (previous round of the same conversation over-hedged with three choices and no opinion, which confused him — corrected by picking one and explaining why). Reasoning: most of the voice guide is universal writing hygiene, not audience-specific quirk; the module's `FORMAT_INSTRUCTIONS` already handle audience-appropriate vocabulary/depth at a different layer, so the two don't collide in practice; and a toggle would solve a problem that doesn't have a real use case yet.
+
+**Built:** new `AE_VOICE_RULES` constant in `modules/m01_research_assistant/agents.py`, replacing `STYLE_RULES` in `run_editor()`'s system prompt only (Writer/Writer B keep the original generic `STYLE_RULES`). Added editing task 12: an explicit self-check checklist (banned phrases, intro directness, sentence length, em dashes, executive summary length, conclusion synthesis) the Editor runs against its own output before finishing, adapted directly from the skill's own pre-delivery checklist.
+
+**Verified directly**, not assumed: ran `run_editor()` against a synthetic draft deliberately stuffed with every banned phrase, an em dash, a scene-setting intro ("In today's rapidly evolving landscape..."), an "In Conclusion" heading, and repeated-in-different-words padding. Real model output (gemini-3-flash-preview): zero banned phrases remained, zero em dashes, "In Conclusion" correctly relabeled to "Conclusions," and the repeated-idea padding was consolidated rather than carried through.
+
+Not yet pushed to GitHub — dev source only.
+
 ### Session 14 — 2026-07-05 (Module 1 claim-level citation system)
 
 Alnoor's ask, in two parts: (1) can the final paper show which citation backs a specific number or claim, since 20+ undifferentiated sources at the bottom made it impossible to fact-check anything, and (2) confirm the user's topic/angle input is fully passed to the Planner and not silently curtailed downstream.
@@ -117,7 +133,9 @@ Alnoor's ask, in two parts: (1) can the final paper show which citation backs a 
 
 **Verified end-to-end against real data (not synthetic fixtures):** ran the full pipeline via script — Planner → Researcher → Critic → Writer A/B → Debate Judge → Fact Checker → Editor → docx — on the topic "CEO succession planning best practices and statistics." Confirmed: 24 of 27 number-bearing sentences carried a citation tag, the Editor pass didn't lose any tags (24 before, 25 after), the References section rendered with real titles/URLs, and the Fact Checker caught one genuine mis-citation (Writer wrote `[S4]`, the actual supporting source was `[S5]`) — exactly the failure mode the feature exists to catch.
 
-Not yet pushed to GitHub — dev source only, awaiting Alnoor's go-ahead to copy to the feedback repo and deploy.
+**Follow-up, same session:** live-tested in real Chrome (not the fast preview tool) end to end on a fresh topic ("AI adoption barriers in mid-size manufacturing companies"). Confirmed on screen: 35 of 35 number-bearing sentences carried a citation (100%), the Fact Checker's mid-run retry on `gemini-3-flash-preview` fell through cleanly to `gemini-3.1-flash-lite` instead of crashing (the finish_reason fix holding up under real conditions, not just the script repro), and the downloaded paper's References section rendered with real titles and links. Caught one more real issue during this run: the Judge scored "Source integration" 4/5 and dinged the paper for "relying heavily on bracketed citations that occasionally disrupt the flow" — it had no idea `[S#]` tags are now a required, intentional feature. Added a line to the Judge's `SOURCE_INTEGRATION` dimension prompt telling it citation tags are mandatory and not a formatting flaw, so it stops penalizing the pipeline for doing what it was just told to do.
+
+Pushed to GitHub (ebrahim8332/multi-agent-studio) 2026-07-05, commit 8962ba3 — Streamlit Cloud auto-deploys.
 
 ### Session 12 — 2026-07-03 (manual testing found 4 real UI issues, all fixed)
 
