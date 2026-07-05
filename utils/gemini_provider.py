@@ -39,6 +39,9 @@ class GeminiProvider(BaseProvider):
                 f"Gemini server error {e.code} on {self.model_name}"
             ) from e
 
+        except FallbackTrigger:
+            raise  # already a clear, specific message (e.g. truncation) — don't rewrap it
+
         except Exception as e:
             # No raw str(e) here, matching the ServerError branch above --
             # this is the catch-all for whatever the SDK/httpx layer throws,
@@ -94,6 +97,24 @@ class GeminiProvider(BaseProvider):
             except concurrent.futures.TimeoutError:
                 raise FallbackTrigger(
                     f"Gemini timeout ({timeout}s) on {self.model_name}"
+                )
+
+        # finish_reason != STOP means Gemini stopped generating before it was
+        # actually done — hit the token cap, tripped a safety filter, or was
+        # cut short by a quota edge case. Any of these can produce a
+        # response.text that looks like valid JSON but is truncated mid-string,
+        # which json.loads() then fails on with no clue why. Groq already
+        # raises FallbackTrigger on its own truncation signal (finish_reason
+        # == "length") — this applies the same check to Gemini, which had no
+        # equivalent guard. Found via a real gemini-3-flash-preview response
+        # that silently truncated at ~800 characters with schema-enforced
+        # output, with no exception raised anywhere.
+        candidates = getattr(response, "candidates", None) or []
+        if candidates:
+            finish_reason = getattr(candidates[0], "finish_reason", None)
+            if finish_reason is not None and str(finish_reason).upper() not in ("STOP", "FINISHREASON.STOP"):
+                raise FallbackTrigger(
+                    f"Gemini output truncated (finish_reason={finish_reason}) on {self.model_name}"
                 )
 
         # Extract token counts from usage metadata

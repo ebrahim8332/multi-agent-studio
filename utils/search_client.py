@@ -378,6 +378,42 @@ def get_search_chain() -> SearchChain:
     return SearchChain()
 
 
+def build_source_registry(research: dict) -> dict:
+    """
+    Assigns a stable citation ID (S1, S2, ...) to every unique source across
+    all research questions, in first-appearance order.
+
+    Calling this again on the same research dict produces the same IDs every
+    time — Python dicts preserve insertion order, and `research` does not
+    change after the Researcher/quality-gate phase finishes. That means
+    Writer A, Writer B, a re-draft, the Fact Checker, and the final document
+    all agree on which number means which source, without needing to pass
+    the registry itself around as extra state.
+
+    Returns: {url: {"id": "S1", "title": ..., "url": ..., "domain": ...}}
+    """
+    from urllib.parse import urlparse
+    registry = {}
+    counter = 1
+    for hits in research.values():
+        for hit in hits:
+            url = hit.get("url", "")
+            if not url or url in registry:
+                continue
+            try:
+                domain = urlparse(url).netloc.replace("www.", "")
+            except Exception:
+                domain = ""
+            registry[url] = {
+                "id":     f"S{counter}",
+                "title":  hit.get("title") or "Untitled",
+                "url":    url,
+                "domain": domain,
+            }
+            counter += 1
+    return registry
+
+
 # ── Direct single-provider access ────────────────────────────────────────────
 #
 # The functions above form a fallback CHAIN — Tavily, then Exa, then Serper,

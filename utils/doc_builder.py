@@ -24,6 +24,7 @@ from docx.shared import Pt, Inches, RGBColor, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+from utils.search_client import build_source_registry
 
 # Imported at module level to avoid a circular import at runtime.
 # utils/ is the foundation layer — modules import from utils, not the reverse.
@@ -126,6 +127,31 @@ def _add_bold_runs(paragraph, text: str) -> None:
             paragraph.add_run(part)
 
 
+_CITATION_TOKEN_RE = re.compile(r"(\*\*.*?\*\*|\[S\d+\])")
+_CITATION_RE       = re.compile(r"^\[S\d+\]$")
+
+
+def _add_runs_with_citations(paragraph, text: str) -> None:
+    """
+    Adds text to a paragraph, converting **bold** markers to bold runs and
+    [S#] citation tags to small superscript runs — so a reader sees a real
+    numbered citation rather than a stray bracket in the sentence.
+    """
+    for part in _CITATION_TOKEN_RE.split(text):
+        if not part:
+            continue
+        if part.startswith("**") and part.endswith("**"):
+            run = paragraph.add_run(part[2:-2])
+            run.bold = True
+        elif _CITATION_RE.match(part):
+            run = paragraph.add_run(part)
+            run.font.superscript = True
+            run.font.size = Pt(9)
+            run.font.color.rgb = BLUE
+        else:
+            paragraph.add_run(part)
+
+
 def _is_bullet(line: str) -> tuple[bool, str]:
     """
     Returns (True, text) if the line is a bullet point.
@@ -176,11 +202,11 @@ def _add_markdown_content(doc: Document, text: str) -> None:
                 para = doc.add_paragraph(style="List Bullet")
                 para.paragraph_format.left_indent  = Inches(0.3)
                 para.paragraph_format.space_after  = Pt(3)
-                _add_bold_runs(para, bul_text)
+                _add_runs_with_citations(para, bul_text)
             else:
                 para = doc.add_paragraph()
                 para.paragraph_format.space_after = Pt(6)
-                _add_bold_runs(para, stripped)
+                _add_runs_with_citations(para, stripped)
 
         i += 1
 
@@ -202,6 +228,7 @@ def build_research_doc(state: dict) -> bytes:
     title      = state.get("title") or topic
     final_text = state.get("final", state.get("draft", "No output generated."))
     sources    = state.get("sources", [])
+    research   = state.get("research", {})
     model_used = state.get("model_used", "unknown")
     today      = date.today().strftime("%B %d, %Y")
 
@@ -228,8 +255,32 @@ def build_research_doc(state: dict) -> bytes:
     # ── Main content ─────────────────────────────────────────────────────────
     _add_markdown_content(doc, final_text)
 
-    # ── Sources ──────────────────────────────────────────────────────────────
-    if sources:
+    # ── References ───────────────────────────────────────────────────────────
+    # Built from the same registry the Writer used to tag [S#] citations in the
+    # body text above, so a number in the text always points at the matching
+    # entry here — title and URL, not just a bare link with no context.
+    registry = build_source_registry(research)
+    if registry:
+        doc.add_paragraph("")
+        doc.add_heading("References", level=1)
+        note_para = doc.add_paragraph()
+        note_run  = note_para.add_run(
+            "Numbers in the text, e.g. [S3], point to the matching reference below."
+        )
+        note_run.font.size = Pt(9)
+        note_run.font.color.rgb = GREY
+        for entry in sorted(registry.values(), key=lambda e: int(e["id"][1:])):
+            para = doc.add_paragraph()
+            para.paragraph_format.space_after = Pt(3)
+            id_run = para.add_run(f"[{entry['id']}] ")
+            id_run.bold = True
+            id_run.font.size = Pt(9)
+            title_run = para.add_run(f"{entry['title']}  ")
+            title_run.font.size = Pt(9)
+            url_run = para.add_run(entry["url"])
+            url_run.font.size = Pt(9)
+            url_run.font.color.rgb = GREY
+    elif sources:
         doc.add_paragraph("")
         doc.add_heading("Sources", level=1)
         for i, url in enumerate(sources, 1):
@@ -346,6 +397,12 @@ def build_research_quality_doc(quality_state: dict) -> bytes:
             f"Fact check: {u} unsupported claim(s), {w} weakly supported claim(s). "
             "See Fact Check section below."
         )
+    citation_mismatches = fc_result.get("citation_mismatch_count", 0)
+    if citation_mismatches:
+        warnings.append(
+            f"Citation check: {citation_mismatches} claim(s) cite the wrong source in the "
+            "paper text. See the Cited column in Fact Check below."
+        )
     if judge_flagged:
         scores = judge_result.get("scores", {})
         rule   = judge_result.get("rule_check", {})
@@ -409,17 +466,23 @@ def build_research_quality_doc(quality_state: dict) -> bytes:
         order = {"Unsupported": 0, "Weak": 1, "Weakly Supported": 1, "Supported": 2}
         sorted_claims = sorted(claims, key=lambda c: order.get(c.get("verdict", "Weak"), 1))
 
-        table = doc.add_table(rows=1, cols=3)
+        table = doc.add_table(rows=1, cols=4)
         table.style = "Light Grid Accent 1"
         hdr = table.rows[0].cells
         hdr[0].text = "Verdict"
         hdr[1].text = "Claim"
         hdr[2].text = "Source"
+        hdr[3].text = "Cited in text"
         for c in sorted_claims:
             row = table.add_row().cells
             row[0].text = c.get("verdict", "Weak")
             row[1].text = c.get("claim", "")[:150]
             row[2].text = c.get("source", "")[:80]
+            tag = c.get("cited_tag", "")
+            cited_text = f"[{tag}]" if tag else "—"
+            if c.get("citation_mismatch"):
+                cited_text += " (mismatch)"
+            row[3].text = cited_text
 
         fc_conf = fc_result.get("confidence", "")
         if fc_conf:

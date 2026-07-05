@@ -10,7 +10,7 @@ LangGraph merges it back into the full state before passing to the next node.
 
 import re
 import json
-from utils.search_client import get_search_chain
+from utils.search_client import get_search_chain, build_source_registry
 
 # ── JSON schemas for structured agents ───────────────────────────────────────
 # Passed to chain.complete(schema=...) so Gemini enforces the output at the API
@@ -36,11 +36,12 @@ FACT_CHECKER_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "claim":   {"type": "string"},
-                    "source":  {"type": "string"},
-                    "verdict": {"type": "string", "enum": ["Supported", "Weak", "Unsupported"]},
+                    "claim":      {"type": "string"},
+                    "matched_id": {"type": "string"},
+                    "cited_tag":  {"type": "string"},
+                    "verdict":    {"type": "string", "enum": ["Supported", "Weak", "Unsupported"]},
                 },
-                "required": ["claim", "source", "verdict"],
+                "required": ["claim", "matched_id", "cited_tag", "verdict"],
             },
         },
         "summary":    {"type": "string"},
@@ -235,6 +236,110 @@ Writing rules — follow exactly:
 - Do not repeat the same phrase, sentence opener, or transition word in more than one
   section of the paper. Each section must open and flow with its own language.
 """
+
+
+# Citation rules injected into both Writer prompts. Every source in the evidence
+# block is pre-tagged with an ID like [S3] by _build_evidence_text() below — this
+# tells the Writer how to use those tags, not just what they mean.
+CITATION_RULES = """
+Citation rules — follow exactly:
+- Every source below has an ID like [S1], [S2]. Use these exact tags.
+- Immediately after any specific number, percentage, dollar figure, date,
+  named study, survey, or report finding, quote, or claim attributed to a
+  named person or organisation, add the [S#] tag for the source that
+  supports it.
+- Match the tag to the source that actually contains the claim. Do not guess
+  or reuse a tag for an unrelated claim.
+- If two sources support the same claim, use both tags: [S2][S5].
+- Do not tag your own analysis, interpretation, or transition sentences —
+  only claims that came from a source.
+- This is mandatory. A paper with unlabelled statistics or unlabelled named
+  findings is not acceptable.
+"""
+
+
+def _build_evidence_text(questions: list, research: dict, critic_ratings: dict, registry: dict) -> str:
+    """
+    Builds the evidence block shared by Writer A and Writer B: one block per
+    question, each source tagged with its registry ID (e.g. [S3]) so the
+    Writer can cite it inline per CITATION_RULES.
+    """
+    from urllib.parse import urlparse
+    evidence_blocks = []
+    for q in questions:
+        rating = critic_ratings.get(q, "Adequate")
+        hits = research.get(q, [])
+        snippets = []
+        for hit in hits:
+            title   = hit.get("title", "")
+            content = hit.get("content", "")[:2500]
+            url     = hit.get("url", "")
+            sid     = registry.get(url, {}).get("id", "S?")
+            try:
+                domain = urlparse(url).netloc.replace("www.", "")
+            except Exception:
+                domain = ""
+            domain_str = f" [{domain}]" if domain else ""
+            snippets.append(f"  - [{sid}] {title}{domain_str}: {content}")
+        evidence_blocks.append(
+            f"Question: {q} [Critic source rating: {rating}]\n"
+            + ("\n".join(snippets) if snippets else "  - No sources found")
+        )
+    return "\n\n".join(evidence_blocks)
+
+
+def _count_citation_tags(text: str) -> int:
+    """Counts [S#] citation tags in a draft. Used to check whether the Editor
+    preserved them — Python counts, the model's self-report is not trusted."""
+    return len(re.findall(r"\[S\d+\]", text))
+
+
+def _resolve_claim_sources(claims: list, registry: dict) -> list:
+    """
+    Fills in a human-readable "source" title for each Fact Checker claim by
+    looking up matched_id in the source registry, and flags citation_mismatch
+    when the tag the Writer placed in the draft (cited_tag) differs from the
+    source the Fact Checker independently judged as the real support
+    (matched_id). Comparing two IDs is exact — no fuzzy title-text guessing.
+
+    A missing cited_tag is not a mismatch on its own — some claims are the
+    Writer's own analysis and correctly carry no tag. This only flags a
+    claim where a tag IS present and it points at the wrong source.
+    """
+    by_id = {v["id"]: v for v in registry.values()}
+
+    for c in claims:
+        matched_id = c.get("matched_id", "").strip().strip("[]")
+        cited_tag  = c.get("cited_tag", "").strip().strip("[]")
+        c["matched_id"] = matched_id
+        c["cited_tag"]  = cited_tag
+        entry = by_id.get(matched_id)
+        c["source"] = entry["title"] if entry else "none found"
+        c["citation_mismatch"] = bool(cited_tag) and bool(matched_id) and cited_tag != matched_id
+
+    return claims
+
+
+def citation_coverage(text: str) -> tuple[int, int]:
+    """
+    Heuristic count of how many sentences containing a number, percentage, or
+    dollar figure also carry a nearby [S#] citation tag. This is an
+    approximation for the on-screen coverage caption, not a guarantee every
+    factual claim is cited — named studies, quotes, and attributed claims
+    without a digit are not counted here.
+
+    Returns: (cited_count, total_count)
+    """
+    sentences         = re.split(r"(?<=[.!?])\s+", text)
+    number_pattern    = re.compile(r"\d")
+    citation_pattern  = re.compile(r"\[S\d+\]")
+    total = cited = 0
+    for s in sentences:
+        if number_pattern.search(s):
+            total += 1
+            if citation_pattern.search(s):
+                cited += 1
+    return cited, total
 
 
 # ── Agent 1: Planner ──────────────────────────────────────────────────────────
@@ -665,31 +770,11 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
     # This lets the Writer see source quality for each question without cross-referencing.
     critic_ratings = _parse_critic_ratings(critique, questions)
 
-    # Build a structured evidence block — include domain and Critic rating per question.
-    # Sources are pre-capped to top 3 per provider in search_client.py, so prompt size
-    # is bounded. Use full 700-char snippet for each source.
-    evidence_blocks = []
-    for q in questions:
-        rating = critic_ratings.get(q, "Adequate")
-        hits = research.get(q, [])
-        snippets = []
-        for hit in hits:
-            title   = hit.get("title", "")
-            content = hit.get("content", "")[:2500]
-            url     = hit.get("url", "")
-            try:
-                from urllib.parse import urlparse
-                domain = urlparse(url).netloc.replace("www.", "")
-            except Exception:
-                domain = ""
-            domain_str = f" [{domain}]" if domain else ""
-            snippets.append(f"  - {title}{domain_str}: {content}")
-        evidence_blocks.append(
-            f"Question: {q} [Critic source rating: {rating}]\n"
-            + ("\n".join(snippets) if snippets else "  - No sources found")
-        )
-
-    evidence_text = "\n\n".join(evidence_blocks)
+    # Stable citation IDs (S1, S2, ...) for every source — same registry Writer B,
+    # the Fact Checker, and the final document all use, so [S#] means the same
+    # thing everywhere.
+    registry      = build_source_registry(research)
+    evidence_text = _build_evidence_text(questions, research, critic_ratings, registry)
 
     messages = [
         {
@@ -698,6 +783,7 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
                 "You are a research writer producing structured, well-sourced papers "
                 "for senior business and technical audiences. "
                 f"{STYLE_RULES}"
+                f"{CITATION_RULES}"
             ),
         },
         {
@@ -710,7 +796,8 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
                 f"Do not exceed {max_words:,} words under any circumstances.\n"
                 f"{angle_instruction}"
                 f"\nFormat instructions:\n{format_instructions}\n\n"
-                f"Evidence gathered (Critic quality rating shown per question):\n{evidence_text}\n\n"
+                f"Evidence gathered (Critic quality rating shown per question, each source "
+                f"tagged with a citation ID — cite claims per the citation rules above):\n{evidence_text}\n\n"
                 + (
                     f"IMPORTANT — RE-DRAFT: A previous draft was reviewed and found lacking. "
                     f"The reviewer's feedback:\n{user_feedback}\n\n"
@@ -740,7 +827,10 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
                 "context only. Do not build a key argument on it.\n"
                 "6. GAPS — where a research question had no sources, name that gap explicitly "
                 "rather than skipping it. Where evidence is weak, say so plainly.\n"
-                "7. AUDIENCE — calibrate vocabulary, depth, and assumed knowledge for the stated audience."
+                "7. AUDIENCE — calibrate vocabulary, depth, and assumed knowledge for the stated audience.\n"
+                "8. CITATIONS — tag every specific number, statistic, date, named study, quote, "
+                "or attributed claim with the matching [S#], per the citation rules above. "
+                "Do not tag your own analysis or transition sentences."
             ),
         },
     ]
@@ -825,7 +915,11 @@ def run_judge(state: dict, chain) -> dict:
                 "ARGUMENT_QUALITY: are claims well-reasoned and supported by evidence? "
                 "Does the paper synthesise across sources rather than summarise them serially?\n"
                 "SOURCE_INTEGRATION: are sources cited in context, with their quality accurately "
-                "reflected? Are Weak-rated sources treated with appropriate caution?\n"
+                "reflected? Are Weak-rated sources treated with appropriate caution? "
+                "The paper is REQUIRED to tag specific claims with citation markers like [S3] — "
+                "this is intentional and mandatory, not a formatting flaw. Do not penalise their "
+                "presence. Only mark this dimension down if a claim needing a citation has none, "
+                "or if the tags are so frequent on non-factual sentences that they read as noise.\n"
                 "FORMAT_ADHERENCE: does the structure, tone, and organisation match the required "
                 "format exactly? Check against the format instructions provided. "
                 "Also check for repeated phrases, sentence openers, or transitions that appear "
@@ -1001,6 +1095,11 @@ def run_editor(state: dict, chain) -> dict:
                    "do not change, shorten, or paraphrase it. "
                    "Do NOT add the title as a heading at the top of your output — "
                    "begin directly with the Executive Summary or first section heading.\n" if title else "")
+                + "11. Preserve every citation tag exactly as written, e.g. [S3] or [S1][S4]. "
+                "Do not remove, renumber, merge, or rewrite them. If you rewrite a sentence "
+                "that contains a citation tag, keep the tag attached to the same claim. "
+                "These tags let the reader trace every figure back to its source — treat "
+                "them as part of the sentence, not as formatting to clean up.\n"
                 + "\n"
                 "Return the complete edited paper from start to finish. "
                 "Do not stop mid-section. Do not summarise or skip sections."
@@ -1009,7 +1108,20 @@ def run_editor(state: dict, chain) -> dict:
     ]
 
     response, model = chain.complete(messages, timeout=180, max_tokens=12000, agent_label="Editor")
-    return {"final": response, "model_used": model, "prompt_sent": messages}
+
+    # Python counts citation tags before and after — the Editor's own claim that
+    # it "preserved" them is not trusted, the same way word counts are not
+    # trusted to the Judge's self-report elsewhere in this pipeline.
+    citation_count_before = _count_citation_tags(draft)
+    citation_count_after  = _count_citation_tags(response)
+
+    return {
+        "final":                  response,
+        "model_used":             model,
+        "prompt_sent":            messages,
+        "citation_count_before":  citation_count_before,
+        "citation_count_after":   citation_count_after,
+    }
 
 
 # ── Agent 4B: Writer B (alternative perspective) ──────────────────────────────
@@ -1040,29 +1152,10 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
 
     critic_ratings = _parse_critic_ratings(critique, questions)
 
-    # Build identical evidence block to Writer A — sources pre-capped in search_client.py
-    evidence_blocks = []
-    for q in questions:
-        rating = critic_ratings.get(q, "Adequate")
-        hits = research.get(q, [])
-        snippets = []
-        for hit in hits:
-            title   = hit.get("title", "")
-            content = hit.get("content", "")[:2500]
-            url     = hit.get("url", "")
-            try:
-                from urllib.parse import urlparse
-                domain = urlparse(url).netloc.replace("www.", "")
-            except Exception:
-                domain = ""
-            domain_str = f" [{domain}]" if domain else ""
-            snippets.append(f"  - {title}{domain_str}: {content}")
-        evidence_blocks.append(
-            f"Question: {q} [Critic source rating: {rating}]\n"
-            + ("\n".join(snippets) if snippets else "  - No sources found")
-        )
-
-    evidence_text = "\n\n".join(evidence_blocks)
+    # Same registry and evidence block as Writer A — same source, same [S#] IDs,
+    # so a citation means the same thing regardless of which draft wins the debate.
+    registry      = build_source_registry(research)
+    evidence_text = _build_evidence_text(questions, research, critic_ratings, registry)
 
     messages = [
         {
@@ -1088,6 +1181,7 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
                 "Use only the sources provided. Do not fabricate evidence. Draw a different "
                 "interpretation from the same facts — do not invent new ones. "
                 f"{STYLE_RULES}"
+                f"{CITATION_RULES}"
             ),
         },
         {
@@ -1100,7 +1194,8 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
                 f"Do not exceed {max_words:,} words under any circumstances.\n"
                 f"{angle_instruction}"
                 f"\nFormat instructions:\n{format_instructions}\n\n"
-                f"Evidence gathered (Critic quality rating shown per question):\n{evidence_text}\n\n"
+                f"Evidence gathered (Critic quality rating shown per question, each source "
+                f"tagged with a citation ID — cite claims per the citation rules above):\n{evidence_text}\n\n"
                 + (
                     f"IMPORTANT — RE-DRAFT: A previous draft was reviewed and found lacking. "
                     f"The reviewer's feedback:\n{user_feedback}\n\n"
@@ -1126,7 +1221,10 @@ def run_writer_b(state: dict, chain, user_feedback: str = "") -> dict:
                 f"6. LENGTH — write a minimum of {target_words:,} words. This is a hard floor.\n"
                 "7. SOURCES — use Weak-rated sources as background only.\n"
                 "8. GAPS — name gaps explicitly rather than skipping them.\n"
-                "9. AUDIENCE — calibrate for the stated audience."
+                "9. AUDIENCE — calibrate for the stated audience.\n"
+                "10. CITATIONS — tag every specific number, statistic, date, named study, quote, "
+                "or attributed claim with the matching [S#], per the citation rules above. "
+                "Do not tag your own analysis or transition sentences."
             ),
         },
     ]
@@ -1259,7 +1357,11 @@ def run_fact_checker(state: dict, chain) -> dict:
     # Parse Critic quality ratings so the Fact Checker can apply extra scrutiny to weak sources
     critic_ratings = _parse_critic_ratings(critique, questions)
 
-    # Build compressed source summary, annotated with Critic rating
+    # Same registry the Writer used to tag its citations — needed so the Fact
+    # Checker can name sources by the exact ID the draft's [S#] tags use.
+    registry = build_source_registry(research)
+
+    # Build compressed source summary, annotated with Critic rating and citation ID
     source_lines = []
     total = 0
     for q in questions:
@@ -1271,7 +1373,8 @@ def run_fact_checker(state: dict, chain) -> dict:
                 break
             title   = hit.get("title", "Untitled")
             content = hit.get("content", "")[:1200]
-            source_lines.append(f"- {title}{rating_note}: {content}")
+            sid     = registry.get(hit.get("url", ""), {}).get("id", "S?")
+            source_lines.append(f"[{sid}] {title}{rating_note}: {content}")
             total += 1
         if total >= 40:
             break
@@ -1283,9 +1386,9 @@ def run_fact_checker(state: dict, chain) -> dict:
             "role": "system",
             "content": (
                 "You are a fact-checker. You will receive a draft paper and a set of source "
-                "summaries. Each source is annotated with its Critic quality rating: "
-                "Strong (primary data, peer-reviewed), Adequate (credible secondary source), "
-                "or Weak (opinion, undated, low authority). "
+                "summaries, each tagged with an ID like [S4]. Each source is annotated with its "
+                "Critic quality rating: Strong (primary data, peer-reviewed), Adequate (credible "
+                "secondary source), or Weak (opinion, undated, low authority). "
                 "Identify 15-20 specific factual claims in the draft and check each "
                 "one against the sources provided. Spread your checks across the full paper, "
                 "not just the opening section.\n\n"
@@ -1296,11 +1399,19 @@ def run_fact_checker(state: dict, chain) -> dict:
                 "Supported: the claim is directly backed by a Strong or Adequate source.\n"
                 "Weak: partial support only, or support comes solely from a Weak-rated source.\n"
                 "Unsupported: no source in the list supports the claim.\n\n"
+                "The draft may contain citation tags like [S4] immediately after a claim — the "
+                "Writer's own attempt to point at the source it used. Report that tag separately "
+                "from your own independent judgement of which source actually supports the claim. "
+                "These can differ, and that difference matters — it means the Writer mis-cited.\n\n"
                 "Return a JSON object with exactly these fields:\n"
                 "claims: array of objects, each with:\n"
-                "  claim: the factual claim as stated in the draft\n"
-                "  source: title of supporting source, or 'none found'\n"
-                "  verdict: exactly 'Supported', 'Weak', or 'Unsupported'\n"
+                "  claim: the factual claim as stated in the draft, without its citation tag\n"
+                "  matched_id: the ID (e.g. \"S4\", no brackets) of the source above that YOU "
+                "judge best supports this claim, or \"\" if none of the provided sources supports it\n"
+                "  cited_tag: the ID (e.g. \"S4\", no brackets) written in the draft immediately "
+                "after this claim, or \"\" if the draft has no tag there\n"
+                "  verdict: exactly 'Supported', 'Weak', or 'Unsupported' — based on matched_id, "
+                "not on cited_tag\n"
                 "summary: one-line overall assessment\n"
                 "confidence: 'high', 'medium', or 'low'\n"
                 "high = claims were clearly verifiable against sources. "
@@ -1332,16 +1443,20 @@ def run_fact_checker(state: dict, chain) -> dict:
             if raw_verdict not in ("Supported", "Weak", "Unsupported"):
                 raw_verdict = "Weak"
             claims.append({
-                "claim":   str(item.get("claim", "")).strip(),
-                "source":  str(item.get("source", "none found")).strip(),
-                "verdict": raw_verdict,
+                "claim":      str(item.get("claim", "")).strip(),
+                "matched_id": str(item.get("matched_id", "")).strip(),
+                "cited_tag":  str(item.get("cited_tag", "")).strip(),
+                "verdict":    raw_verdict,
             })
 
         fc_summary    = data.get("summary", "").strip()
         raw_conf      = data.get("confidence", "medium").lower()
         fc_confidence = raw_conf if raw_conf in ("high", "medium", "low") else "medium"
 
-    except Exception:
+    except Exception as e:
+        # Capture the real error instead of a silent generic failure — matches
+        # the fix already applied to the m02 Stock Analyser's Fact Checker
+        # after a production run there hit the same class of hidden failure.
         return {
             "fact_check_result": {
                 "claims":            [],
@@ -1350,6 +1465,7 @@ def run_fact_checker(state: dict, chain) -> dict:
                 "weak_count":        0,
                 "flagged":           True,
                 "error":             True,
+                "error_detail":      str(e),
                 "model_used":        model,
                 "prompt_sent":       messages,
             }
@@ -1370,18 +1486,27 @@ def run_fact_checker(state: dict, chain) -> dict:
             }
         }
 
-    unsupported_count = sum(1 for c in claims if c.get("verdict") == "Unsupported")
-    weak_count        = sum(1 for c in claims if c.get("verdict") == "Weak")
+    # Resolve matched_id to a human-readable source title, and flag any claim
+    # where the tag the Writer put in the draft (cited_tag) does not match the
+    # source the Fact Checker independently judged as the real support
+    # (matched_id). This compares two structured IDs, not fuzzy title text —
+    # exact and reliable, not a "does this text roughly match" guess.
+    claims = _resolve_claim_sources(claims, registry)
+
+    unsupported_count       = sum(1 for c in claims if c.get("verdict") == "Unsupported")
+    weak_count              = sum(1 for c in claims if c.get("verdict") == "Weak")
+    citation_mismatch_count = sum(1 for c in claims if c.get("citation_mismatch"))
 
     return {
         "fact_check_result": {
-            "claims":            claims,
-            "summary":           fc_summary,
-            "unsupported_count": unsupported_count,
-            "weak_count":        weak_count,
-            "flagged":           unsupported_count > 0,
-            "confidence":        fc_confidence,
-            "model_used":        model,
-            "prompt_sent":       messages,
+            "claims":                  claims,
+            "summary":                 fc_summary,
+            "unsupported_count":       unsupported_count,
+            "weak_count":              weak_count,
+            "citation_mismatch_count": citation_mismatch_count,
+            "flagged":                 unsupported_count > 0,
+            "confidence":              fc_confidence,
+            "model_used":              model,
+            "prompt_sent":             messages,
         }
     }

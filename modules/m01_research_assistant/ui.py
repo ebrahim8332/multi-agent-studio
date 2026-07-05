@@ -25,10 +25,11 @@ import streamlit as st
 import streamlit.components.v1 as components
 from concurrent.futures import ThreadPoolExecutor
 from utils.model_client import get_chain, APPROX_PRICING, SESSION_LOCK_KEY
+from utils.search_client import build_source_registry
 from modules.m01_research_assistant.agents import (
     run_planner, run_researcher, run_critic, run_writer, run_writer_b,
     run_debate_judge, run_fact_checker, run_judge, run_editor,
-    flag_weak_questions, flag_irrelevant_questions,
+    flag_weak_questions, flag_irrelevant_questions, citation_coverage,
 )
 from modules.m01_research_assistant.pipeline import get_initial_state
 from utils.doc_builder import build_research_doc, build_research_quality_doc
@@ -354,10 +355,14 @@ div[data-baseweb="select"] * { cursor: pointer; }
         ),
         height=120, key=f"m01_topic_{fk}", disabled=locked,
     )
-    angle = st.text_input(
+    angle = st.text_area(
         "Specific angle or focus (optional)",
-        placeholder="e.g. regulatory risk, investor perspective, implementation challenges",
-        key=f"m01_angle_{fk}", disabled=locked,
+        placeholder=(
+            "e.g. regulatory risk, investor perspective, implementation challenges\n\n"
+            "Use this for any direction you want the Planner to weigh — sources to "
+            "prioritize, aspects to skip, a stance to test. Not curtailed."
+        ),
+        height=80, key=f"m01_angle_{fk}", disabled=locked,
     )
     col_left, col_right = st.columns(2)
     with col_left:
@@ -1707,6 +1712,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
         st.session_state["m01_agent_outputs"] = agent_outputs
         st.session_state["m01_phase"]         = "complete"
 
+        _show_citation_coverage(full_state)
         _show_sources()
         _show_run_summary()
         _show_download()
@@ -1734,6 +1740,7 @@ div[data-baseweb="select"] * { cursor: pointer; }
         debate_gate_ph.empty()
         fact_check_gate_ph.empty()
         judge_gate_ph.empty()
+        _show_citation_coverage(st.session_state.get("m01_full_state", {}))
         _show_sources()
         _show_run_summary()
         _show_download()
@@ -1741,6 +1748,32 @@ div[data-baseweb="select"] * { cursor: pointer; }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _show_citation_coverage(full_state: dict) -> None:
+    """
+    Shows an approximate citation coverage caption below the Editor panel:
+    how many sentences with a number carry a nearby [S#] tag, and whether the
+    Editor's polishing pass dropped any tags the Writer originally placed.
+
+    This is a heuristic, not a guarantee every factual claim is cited —
+    named studies, quotes, and attributed claims without a digit are not
+    counted by citation_coverage(). It is a sanity check, not a QA gate.
+    """
+    final_text = full_state.get("final", "")
+    if not final_text:
+        return
+    cited, total = citation_coverage(final_text)
+    if total > 0:
+        pct = round(100 * cited / total)
+        st.caption(f"📎 Citations: {cited} of {total} sentences with a number carry a [S#] source tag ({pct}%).")
+
+    before = full_state.get("citation_count_before")
+    after  = full_state.get("citation_count_after")
+    if before is not None and after is not None and after < before:
+        st.caption(
+            f"⚠️ The Editor's polishing pass reduced citation tags from {before} to {after}. "
+            "Some claims may have lost their source reference."
+        )
 
 def _format_debate_output(debate_result: dict) -> str:
     """Formats Debate Judge result as markdown for the checkpoint info box."""
@@ -1769,21 +1802,34 @@ def _format_fact_check_output(fc_result: dict) -> str:
     summary     = fc_result.get("summary", "")
     unsupported = fc_result.get("unsupported_count", 0)
     weak        = fc_result.get("weak_count", 0)
+    mismatches  = fc_result.get("citation_mismatch_count", 0)
 
     lines = []
     if summary:
         lines.append(f"**Summary:** {summary}")
         lines.append("")
+    if fc_result.get("error_detail"):
+        lines.append(f"**Error detail:** `{fc_result['error_detail']}`")
+        lines.append("")
     lines.append(f"Unsupported: {unsupported} · Weak: {weak} · Claims checked: {len(claims)}")
+    if mismatches:
+        lines.append(
+            f"⚠️ **{mismatches} citation mismatch(es)** — the tag next to the claim in the "
+            "paper points at a different source than the one that actually supports it."
+        )
     lines.append("")
-    lines.append("| | Verdict | Claim | Source |")
-    lines.append("|---|---|---|---|")
+    lines.append("| | Verdict | Claim | Source | Cited |")
+    lines.append("|---|---|---|---|---|")
     for claim in claims:
-        verdict = claim.get("verdict", "Weak")
-        icon    = "🟢" if verdict == "Supported" else ("🟡" if verdict == "Weak" else "🔴")
-        c_text  = claim.get("claim", "").replace("|", ",")[:120]
-        source  = claim.get("source", "").replace("|", ",")[:60]
-        lines.append(f"| {icon} | {verdict} | {c_text} | {source} |")
+        verdict    = claim.get("verdict", "Weak")
+        icon       = "🟢" if verdict == "Supported" else ("🟡" if verdict == "Weak" else "🔴")
+        c_text     = claim.get("claim", "").replace("|", ",")[:120]
+        source     = claim.get("source", "").replace("|", ",")[:60]
+        cited_tag  = claim.get("cited_tag", "")
+        cited_disp = f"[{cited_tag}]" if cited_tag else "—"
+        if claim.get("citation_mismatch"):
+            cited_disp = f"⚠️ {cited_disp}"
+        lines.append(f"| {icon} | {verdict} | {c_text} | {source} | {cited_disp} |")
     return "\n".join(lines)
 
 
@@ -2125,13 +2171,23 @@ def _parse_critic_summary(critique: str, questions: list) -> list:
 
 def _show_sources() -> None:
     full_state = st.session_state.get("m01_full_state", {})
+    research   = full_state.get("research", {})
     sources    = full_state.get("sources", [])
     if not sources:
         return
+    registry = build_source_registry(research)
     st.markdown("---")
-    with st.expander(f"Sources ({len(sources)} URLs)", expanded=False):
-        for i, url in enumerate(sources, 1):
-            st.markdown(f"{i}. {url}")
+    with st.expander(f"References ({len(sources)} sources)", expanded=False):
+        st.caption(
+            "Numbers like [S3] in the paper above point to the matching reference below. "
+            "Use these to check any specific figure or claim against its source directly."
+        )
+        if registry:
+            for entry in sorted(registry.values(), key=lambda e: int(e["id"][1:])):
+                st.markdown(f"**[{entry['id']}]** {entry['title']}  \n{entry['url']}")
+        else:
+            for i, url in enumerate(sources, 1):
+                st.markdown(f"{i}. {url}")
 
 
 def _show_run_summary() -> None:
