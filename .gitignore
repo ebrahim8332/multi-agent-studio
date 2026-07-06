@@ -21,3 +21,11 @@ Thumbs.db
 # IDEs
 .vscode/
 .idea/
+
+# Deploy repo — nothing but what Streamlit Cloud needs to run the app, no
+# exceptions. Documentation belongs in dev source only.
+README.md
+CLAUDE.md
+AGENTS.md
+PROJECT.md
+docs/
