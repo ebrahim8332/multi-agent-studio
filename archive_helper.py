@@ -51,6 +51,10 @@ def save_report(
         return None
 
     try:
+        # returning="minimal" is required: the anon key can only INSERT, not
+        # SELECT, and Postgres/PostgREST's default behavior tries to read the
+        # row back after inserting (needs SELECT). Without this, every insert
+        # is rejected by RLS even though the INSERT policy itself is correct.
         client.table("reports").insert({
             "app_name": app_name,
             "module_name": module_name,
@@ -60,7 +64,7 @@ def save_report(
             "file_url": file_url,
             "file_type": file_type,
             "status": status,
-        }).execute()
+        }, returning="minimal").execute()
     except Exception as e:
         logger.warning(f"archive_helper: file uploaded but metadata row failed: {e}")
 
@@ -93,7 +97,7 @@ def _upload_with_retries(client, app_name, module_name, file_bytes, file_name, f
             client.storage.from_(app_name).upload(
                 path=storage_path,
                 file=file_bytes,
-                file_options={"content-type": content_type, "upsert": "true"},
+                file_options={"content-type": content_type},
             )
             return client.storage.from_(app_name).get_public_url(storage_path)
         except Exception as e:
