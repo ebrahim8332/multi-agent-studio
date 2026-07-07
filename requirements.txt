@@ -10,3 +10,4 @@ python-dotenv
 pypdf2
 yfinance
 plotly
+supabase

@@ -33,6 +33,7 @@ from modules.m01_research_assistant.agents import (
 )
 from modules.m01_research_assistant.pipeline import get_initial_state
 from utils.doc_builder import build_research_doc, build_research_quality_doc
+from archive_helper import save_report
 
 
 AGENTS = [
@@ -2306,6 +2307,49 @@ def _show_download() -> None:
         "call_log":          call_log,
     }
     quality_bytes = build_research_quality_doc(quality_state)
+
+    fact_check_result = full_state.get("fact_check_result", {})
+    debate_result     = full_state.get("debate_result", {})
+    judge_scores      = {dim: v.get("score") for dim, v in judge_result.get("scores", {}).items()}
+    word_count        = len(full_state.get("final", "").split())
+    summary_text      = f"{word_count}-word {inputs.get('format_style', 'White Paper')} on '{topic}'"
+
+    # Short structured summary only — not the full agent transcripts — to stay
+    # light on the shared Supabase free tier. See universal-report-archive-spec.
+    interim_summary = {
+        "questions":              questions,
+        "writer_attempt":         writer_attempt,
+        "debate_winner":          debate_result.get("winner"),
+        "fact_check_summary":     fact_check_result.get("summary"),
+        "fact_check_unsupported": fact_check_result.get("unsupported_count"),
+        "fact_check_weak":        fact_check_result.get("weak_count"),
+        "judge_scores":           judge_scores,
+        "model_used":             model,
+    }
+
+    with st.spinner("Archiving report to permanent storage..."):
+        archive_url = save_report(
+            app_name="multi-agent-studio",
+            module_name="m01-research-assistant",
+            file_bytes=doc_bytes,
+            file_name=filename,
+            file_type="docx",
+            user_prompt=topic,
+            interim_steps=interim_summary,
+            final_output_summary=summary_text,
+        )
+        save_report(
+            app_name="multi-agent-studio",
+            module_name="m01-research-assistant",
+            file_bytes=quality_bytes,
+            file_name=quality_filename,
+            file_type="docx",
+            user_prompt=topic,
+            final_output_summary=f"Quality report for: {summary_text}",
+        )
+
+    if archive_url is None:
+        st.warning("⚠️ Report ready below. Cloud backup failed — download still works.")
 
     col1, col2 = st.columns(2)
     with col1:
