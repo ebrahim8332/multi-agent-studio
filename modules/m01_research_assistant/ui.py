@@ -33,7 +33,7 @@ from modules.m01_research_assistant.agents import (
 )
 from modules.m01_research_assistant.pipeline import get_initial_state
 from utils.doc_builder import build_research_doc, build_research_quality_doc
-from archive_helper import save_report
+from archive_helper import save_report, notify_archived
 
 
 AGENTS = [
@@ -2350,6 +2350,8 @@ def _show_download() -> None:
 
     if archive_url is None:
         st.warning("⚠️ Report ready below. Cloud backup failed — download still works.")
+    else:
+        notify_archived()
 
     col1, col2 = st.columns(2)
     with col1:

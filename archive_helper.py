@@ -5,8 +5,13 @@ Never blocks or breaks the app's existing local download flow: every failure pat
 returns None instead of raising.
 """
 
+import base64
+import io
 import logging
+import math
+import struct
 import time
+import wave
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +74,45 @@ def save_report(
         logger.warning(f"archive_helper: file uploaded but metadata row failed: {e}")
 
     return file_url
+
+
+def notify_archived():
+    """
+    Shows a bold on-screen confirmation plus a short chime after a successful
+    archive, so the user isn't left guessing whether anything happened. Call
+    this only when save_report() returned a real URL, not None.
+    """
+    import streamlit as st
+
+    st.success("✅ **Report archived successfully** — a permanent copy has been saved to cloud storage.")
+    audio_b64 = _generate_chime_wav_base64()
+    st.markdown(
+        f'<audio autoplay="true"><source src="data:audio/wav;base64,{audio_b64}" type="audio/wav"></audio>',
+        unsafe_allow_html=True,
+    )
+
+
+def _generate_chime_wav_base64():
+    """Synthesizes a short two-note confirmation chime — no external audio file needed."""
+    sample_rate = 44100
+    notes = [(880.0, 0.12), (1174.0, 0.18)]  # A5 then D6 — a bright, quick "done" sound
+    frames = bytearray()
+    for freq, duration in notes:
+        n_samples = int(sample_rate * duration)
+        fade_samples = max(1, int(sample_rate * 0.01))
+        for i in range(n_samples):
+            t = i / sample_rate
+            fade = min(i / fade_samples, 1.0, (n_samples - i) / fade_samples)
+            sample = math.sin(2 * math.pi * freq * t) * fade * 0.3
+            frames += struct.pack("<h", int(sample * 32767))
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(bytes(frames))
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def _get_client():

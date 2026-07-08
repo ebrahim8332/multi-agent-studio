@@ -35,7 +35,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from utils.model_client import get_chain, APPROX_PRICING, SESSION_LOCK_KEY
 from utils.doc_builder import build_stock_research_doc
-from archive_helper import save_report
+from archive_helper import save_report, notify_archived
 from modules.m02_stock.agents import (
     run_resolver, run_data_agent, run_fundamentals_analyst, run_quality_analyst,
     run_risk_analyst, run_fact_checker, run_bull_advocate, run_bear_advocate, run_synthesizer,
@@ -1012,6 +1012,8 @@ def render() -> None:
 
                 if archive_url is None:
                     st.warning("⚠️ Report ready below. Cloud backup failed — download still works.")
+                else:
+                    notify_archived()
 
                 st.download_button(
                     "⬇️ Download research note (.docx)", data=doc_bytes,
