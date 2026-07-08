@@ -35,6 +35,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from utils.model_client import get_chain, APPROX_PRICING, SESSION_LOCK_KEY
 from utils.doc_builder import build_stock_research_doc
+from archive_helper import save_report
 from modules.m02_stock.agents import (
     run_resolver, run_data_agent, run_fundamentals_analyst, run_quality_analyst,
     run_risk_analyst, run_fact_checker, run_bull_advocate, run_bear_advocate, run_synthesizer,
@@ -984,9 +985,37 @@ def render() -> None:
                 )
             else:
                 doc_bytes = build_stock_research_doc(doc_state)
+                file_name = f"{today_slug}-research-note.docx"
+
+                interim_summary = {
+                    "ticker": ticker,
+                    "time_horizon": time_horizon,
+                    "data_quality_score": db.get("data_quality_score"),
+                    "data_quality_label": db.get("data_quality_label"),
+                    "fact_check_summary": pipeline_state.get("fact_check_summary"),
+                    "fact_check_flagged": pipeline_state.get("fact_check_flagged"),
+                    "model_used": pipeline_state.get("model_used"),
+                }
+                summary_text = f"{rating} rating, {confidence} confidence, for {company_name} ({ticker})"
+
+                with st.spinner("Archiving report to permanent storage..."):
+                    archive_url = save_report(
+                        app_name="multi-agent-studio",
+                        module_name="m02-stock",
+                        file_bytes=doc_bytes,
+                        file_name=file_name,
+                        file_type="docx",
+                        user_prompt=f"{ticker} ({company_name})",
+                        interim_steps=interim_summary,
+                        final_output_summary=summary_text,
+                    )
+
+                if archive_url is None:
+                    st.warning("⚠️ Report ready below. Cloud backup failed — download still works.")
+
                 st.download_button(
                     "⬇️ Download research note (.docx)", data=doc_bytes,
-                    file_name=f"{today_slug}-research-note.docx",
+                    file_name=file_name,
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     key="m02_download_btn",
                 )
