@@ -277,6 +277,12 @@ class SearchChain:
             # Filter out dead links, paywalled pages, and 404s
             selected = _verify_urls_parallel(selected)
 
+            # Remove low-authority domains (YouTube, LinkedIn, Facebook, etc.)
+            selected = [
+                hit for hit in selected
+                if urlparse(hit.get("url", "")).netloc.replace("www.", "") not in _ENRICH_SKIP_DOMAINS
+            ]
+
             research[query] = selected
             provider_stats[query] = {
                 "tavily": min(len(tavily_results), TOP_N_PER_PROVIDER),
