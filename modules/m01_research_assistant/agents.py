@@ -306,18 +306,20 @@ Before finishing, run this checklist against your own output:
 # tells the Writer how to use those tags, not just what they mean.
 CITATION_RULES = """
 Citation rules — follow exactly:
-- Every source below has an ID like [S1], [S2]. Use these exact tags.
-- Immediately after any specific number, percentage, dollar figure, date,
-  named study, survey, or report finding, quote, or claim attributed to a
-  named person or organisation, add the [S#] tag for the source that
-  supports it.
-- Match the tag to the source that actually contains the claim. Do not guess
-  or reuse a tag for an unrelated claim.
-- If two sources support the same claim, use both tags: [S2][S5].
-- Do not tag your own analysis, interpretation, or transition sentences —
-  only claims that came from a source.
-- This is mandatory. A paper with unlabelled statistics or unlabelled named
-  findings is not acceptable.
+- Cite ONLY specific numbers, percentages, and dollar figures. Do not cite
+  general statements, named studies without a specific figure, your own
+  analysis, or transition sentences.
+- Maximum 10 citation tags in the entire paper. Be selective — only the most
+  important quantitative claims need a tag.
+- Each source below has an ID like [S1], [S2]. Place the tag immediately after
+  the number or percentage it supports, e.g. "methane leakage reached 2.3% [S4]".
+- Match the tag to the source that actually contains the figure. Do not guess.
+- Sources published before 2024: do not cite specific numbers from them.
+  Generalize instead — write "studies suggest..." or "evidence indicates..."
+  without including the figure.
+- If a source has no publication year shown, you may still cite it, but prefer
+  dated recent sources for all quantitative claims.
+- Do not tag the same figure with multiple tags unless two sources confirm it.
 """
 
 
@@ -337,13 +339,17 @@ def _build_evidence_text(questions: list, research: dict, critic_ratings: dict, 
             title   = hit.get("title", "")
             content = hit.get("content", "")[:2500]
             url     = hit.get("url", "")
-            sid     = registry.get(url, {}).get("id", "S?")
+            entry = registry.get(url, {})
+            sid   = entry.get("id", "S?")
+            pub   = entry.get("publisher", "")
+            year  = entry.get("published_year", "")
             try:
                 domain = urlparse(url).netloc.replace("www.", "")
             except Exception:
                 domain = ""
-            domain_str = f" [{domain}]" if domain else ""
-            snippets.append(f"  - [{sid}] {title}{domain_str}: {content}")
+            pub_str    = f" ({pub}, {year})" if year else f" ({pub})" if pub else ""
+            domain_str = f" [{domain}]" if domain and not pub else ""
+            snippets.append(f"  - [{sid}] {title}{pub_str}{domain_str}: {content}")
         evidence_blocks.append(
             f"Question: {q} [Critic source rating: {rating}]\n"
             + ("\n".join(snippets) if snippets else "  - No sources found")
@@ -1102,6 +1108,24 @@ def run_editor(state: dict, chain) -> dict:
         if angle else ""
     )
 
+    # Weak/Unsupported claims from Fact Checker — Editor generalizes their specific figures
+    fc_result   = state.get("fact_check_result", {})
+    fc_claims   = fc_result.get("claims", []) if isinstance(fc_result, dict) else []
+    weak_claims = [
+        c.get("claim", "") for c in fc_claims
+        if c.get("verdict", "Supported") in ("Weak", "Unsupported") and c.get("claim")
+    ]
+    weak_claims_task = (
+        "13. Weak-claim generalization: the following claims were flagged as Weak or "
+        "Unsupported by the Fact Checker. For any sentence in the paper that contains "
+        "a specific number or percentage from one of these claims, remove the figure "
+        "and generalize: use 'evidence suggests...', 'studies indicate...', or similar. "
+        "The conceptual point must remain — only the unreliable figure is removed.\n"
+        + "\n".join(f"    - {c}" for c in weak_claims)
+        + "\n"
+        if weak_claims else ""
+    )
+
     # Points from the losing draft that the Debate Judge said are worth keeping
     debate_result   = state.get("debate_result", {})
     incorporate     = debate_result.get("incorporate", []) if isinstance(debate_result, dict) else []
@@ -1168,6 +1192,7 @@ def run_editor(state: dict, chain) -> dict:
                 "immediately, sentences over 20 words, em dashes, executive summary length, "
                 "and whether the conclusion adds synthesis rather than repeating the body. "
                 "Fix anything that fails before finishing.\n"
+                + weak_claims_task
                 + "\n"
                 "Return the complete edited paper from start to finish. "
                 "Do not stop mid-section. Do not summarise or skip sections."

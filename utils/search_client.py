@@ -30,6 +30,7 @@ Article enrichment:
 """
 
 import os
+import re
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -92,9 +93,10 @@ def _search_tavily(query: str, max_results: int) -> list[dict]:
     response = client.search(query=query, search_depth="advanced", max_results=max_results)
     return [
         {
-            "title":   r.get("title", ""),
-            "url":     r.get("url", ""),
-            "content": r.get("content", ""),
+            "title":          r.get("title", ""),
+            "url":            r.get("url", ""),
+            "content":        r.get("content", ""),
+            "published_date": r.get("published_date", "") or "",
         }
         for r in response.get("results", [])
     ]
@@ -110,9 +112,10 @@ def _search_exa(query: str, max_results: int) -> list[dict]:
     response = client.search(query, num_results=max_results)
     return [
         {
-            "title":   r.title or "",
-            "url":     r.url or "",
-            "content": (r.text or "")[:1200],
+            "title":          r.title or "",
+            "url":            r.url or "",
+            "content":        (r.text or "")[:1200],
+            "published_date": getattr(r, "published_date", "") or "",
         }
         for r in response.results
     ]
@@ -384,6 +387,22 @@ def get_search_chain() -> SearchChain:
     return SearchChain()
 
 
+def _extract_year(date_str: str) -> str:
+    """Extracts a 4-digit year from a date string. Returns '' if none found."""
+    if not date_str:
+        return ""
+    m = re.search(r'\b(20\d{2}|19\d{2})\b', str(date_str))
+    return m.group(1) if m else ""
+
+
+def _domain_to_publisher(domain: str) -> str:
+    """Converts a domain to a short publisher label, e.g. 'iea.org' → 'IEA'."""
+    if not domain:
+        return ""
+    name = domain.split(".")[0]
+    return name.upper() if len(name) <= 4 else name.title()
+
+
 def build_source_registry(research: dict) -> dict:
     """
     Assigns a stable citation ID (S1, S2, ...) to every unique source across
@@ -411,10 +430,12 @@ def build_source_registry(research: dict) -> dict:
             except Exception:
                 domain = ""
             registry[url] = {
-                "id":     f"S{counter}",
-                "title":  hit.get("title") or "Untitled",
-                "url":    url,
-                "domain": domain,
+                "id":             f"S{counter}",
+                "title":          hit.get("title") or "Untitled",
+                "url":            url,
+                "domain":         domain,
+                "published_year": _extract_year(hit.get("published_date", "")),
+                "publisher":      _domain_to_publisher(domain),
             }
             counter += 1
     return registry

@@ -131,11 +131,34 @@ _CITATION_TOKEN_RE = re.compile(r"(\*\*.*?\*\*|\[S\d+\])")
 _CITATION_RE       = re.compile(r"^\[S\d+\]$")
 
 
-def _add_runs_with_citations(paragraph, text: str) -> None:
+def _add_hyperlink(paragraph, text: str, url: str) -> None:
+    """Inserts a clickable hyperlink run into a paragraph."""
+    import docx.opc.constants as _opc
+    part = paragraph.part
+    r_id = part.relate_to(url, _opc.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+    hl   = OxmlElement("w:hyperlink")
+    hl.set(qn("r:id"), r_id)
+    r    = OxmlElement("w:r")
+    rPr  = OxmlElement("w:rPr")
+    clr  = OxmlElement("w:color")
+    clr.set(qn("w:val"), "2E75B6")
+    u    = OxmlElement("w:u")
+    u.set(qn("w:val"), "single")
+    rPr.append(clr)
+    rPr.append(u)
+    r.append(rPr)
+    t      = OxmlElement("w:t")
+    t.text = text
+    r.append(t)
+    hl.append(r)
+    paragraph._p.append(hl)
+
+
+def _add_runs_with_citations(paragraph, text: str, registry: dict = None) -> None:
     """
-    Adds text to a paragraph, converting **bold** markers to bold runs and
-    [S#] citation tags to small superscript runs — so a reader sees a real
-    numbered citation rather than a stray bracket in the sentence.
+    Adds text to a paragraph converting **bold** markers to bold runs and
+    [S#] tags to inline (Publisher, Year) hyperlinks when a registry is provided,
+    or superscript runs when it is not.
     """
     for part in _CITATION_TOKEN_RE.split(text):
         if not part:
@@ -144,6 +167,15 @@ def _add_runs_with_citations(paragraph, text: str) -> None:
             run = paragraph.add_run(part[2:-2])
             run.bold = True
         elif _CITATION_RE.match(part):
+            if registry:
+                sid   = part[1:-1]  # "[S3]" → "S3"
+                entry = next((e for e in registry.values() if e["id"] == sid), None)
+                if entry:
+                    pub   = entry.get("publisher", "") or entry.get("domain", "")
+                    year  = entry.get("published_year", "")
+                    label = f"({pub}, {year})" if year else f"({pub})" if pub else part
+                    _add_hyperlink(paragraph, label, entry["url"])
+                    continue
             run = paragraph.add_run(part)
             run.font.superscript = True
             run.font.size = Pt(9)
@@ -164,7 +196,7 @@ def _is_bullet(line: str) -> tuple[bool, str]:
     return False, stripped
 
 
-def _add_markdown_content(doc: Document, text: str) -> None:
+def _add_markdown_content(doc: Document, text: str, registry: dict = None) -> None:
     """
     Parses markdown-style text and adds it to the document.
 
@@ -193,7 +225,6 @@ def _add_markdown_content(doc: Document, text: str) -> None:
             doc.add_heading(stripped[3:], level=1)
 
         elif stripped == "":
-            # Blank line — add a small spacer only if previous was not a heading
             doc.add_paragraph("")
 
         else:
@@ -202,13 +233,78 @@ def _add_markdown_content(doc: Document, text: str) -> None:
                 para = doc.add_paragraph(style="List Bullet")
                 para.paragraph_format.left_indent  = Inches(0.3)
                 para.paragraph_format.space_after  = Pt(3)
-                _add_runs_with_citations(para, bul_text)
+                _add_runs_with_citations(para, bul_text, registry)
             else:
                 para = doc.add_paragraph()
                 para.paragraph_format.space_after = Pt(6)
-                _add_runs_with_citations(para, stripped)
+                _add_runs_with_citations(para, stripped, registry)
 
         i += 1
+
+
+def _build_key_numbers_table(doc: Document, final_text: str, registry: dict) -> None:
+    """
+    Scans the paper for sentences containing [S#] tags and at least one
+    number or percentage, then builds a three-column Key Numbers table:
+    Claim | Source | Year.
+    """
+    sentence_re = re.compile(r'([^.!?\n]*\[S\d+\][^.!?\n]*[.!?\n]?)')
+    number_re   = re.compile(
+        r'\b\d[\d,.]*\s*%'
+        r'|\b\d[\d,.]*\s*(?:billion|million|trillion|bn|mn|percent)\b'
+        r'|\b\d+\.?\d+\b'
+    )
+    rows     = []
+    seen_ids = set()
+    for sentence in sentence_re.findall(final_text):
+        sentence = sentence.strip()
+        sid_nums = re.findall(r'\[S(\d+)\]', sentence)
+        if not sid_nums:
+            continue
+        clean = re.sub(r'\[S\d+\]', '', sentence).strip()
+        if not number_re.search(clean):
+            continue
+        for sid_num in sid_nums:
+            sid = f"S{sid_num}"
+            if sid in seen_ids:
+                continue
+            seen_ids.add(sid)
+            entry = next((e for e in registry.values() if e["id"] == sid), None)
+            if not entry:
+                continue
+            pub  = entry.get("publisher", "") or entry.get("domain", "")
+            year = entry.get("published_year", "")
+            rows.append((clean[:220], pub, year, entry.get("url", "")))
+
+    if not rows:
+        return
+
+    doc.add_paragraph("")
+    doc.add_heading("Key Numbers", level=1)
+    note_para = doc.add_paragraph()
+    note_run  = note_para.add_run(
+        "Cited figures in this paper. Click a source name in the paper text to open it directly."
+    )
+    note_run.font.size      = Pt(9)
+    note_run.font.color.rgb = GREY
+
+    table = doc.add_table(rows=1, cols=3)
+    table.style = "Table Grid"
+    hdr = table.rows[0].cells
+    for i, label in enumerate(("Claim", "Source", "Year")):
+        hdr[i].text = label
+        run = hdr[i].paragraphs[0].runs[0]
+        run.bold           = True
+        run.font.size      = Pt(9)
+        run.font.color.rgb = NAVY
+
+    for claim, pub, year, url in rows:
+        cells = table.add_row().cells
+        cells[0].text = claim
+        cells[1].text = pub
+        cells[2].text = year or "n/d"
+        for cell in cells:
+            cell.paragraphs[0].runs[0].font.size = Pt(9)
 
 
 def build_research_doc(state: dict) -> bytes:
@@ -253,19 +349,20 @@ def build_research_doc(state: dict) -> bytes:
     _add_horizontal_rule(doc)
 
     # ── Main content ─────────────────────────────────────────────────────────
-    _add_markdown_content(doc, final_text)
+    registry = build_source_registry(research)
+    _add_markdown_content(doc, final_text, registry)
+
+    # ── Key Numbers table ─────────────────────────────────────────────────────
+    if registry:
+        _build_key_numbers_table(doc, final_text, registry)
 
     # ── References ───────────────────────────────────────────────────────────
-    # Built from the same registry the Writer used to tag [S#] citations in the
-    # body text above, so a number in the text always points at the matching
-    # entry here — title and URL, not just a bare link with no context.
-    registry = build_source_registry(research)
     if registry:
         doc.add_paragraph("")
         doc.add_heading("References", level=1)
         note_para = doc.add_paragraph()
         note_run  = note_para.add_run(
-            "Numbers in the text, e.g. [S3], point to the matching reference below."
+            "Sources consulted during research. Cited figures link directly to their source in the paper text."
         )
         note_run.font.size = Pt(9)
         note_run.font.color.rgb = GREY
