@@ -1037,7 +1037,7 @@ def run_judge(state: dict, chain) -> dict:
     judge_confidence = "medium"
     judge_error = False
     try:
-        response, model = chain.complete(messages, agent_label="Judge", schema=JUDGE_SCHEMA)
+        response, model = chain.complete(messages, timeout=180, agent_label="Judge", schema=JUDGE_SCHEMA)
         data = json.loads(response)
         for dim in ("completeness", "argument_quality", "source_integration", "format_adherence"):
             raw = data.get(dim, {})
