@@ -71,7 +71,7 @@ class GeminiProvider(BaseProvider):
                 )
 
         if max_tokens is None:
-            max_tokens = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "8192"))
+            max_tokens = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "16384"))
         config = types.GenerateContentConfig(
             system_instruction=system_text if system_text else None,
             temperature=temperature,
