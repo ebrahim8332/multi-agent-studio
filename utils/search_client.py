@@ -34,6 +34,7 @@ import re
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse
 
 # Domains excluded from article enrichment — low-quality or non-article content
 _ENRICH_SKIP_DOMAINS = {
@@ -312,7 +313,6 @@ class SearchChain:
             enriched_research: updated copy of the research dict
             enriched_count:    total number of sources enriched
         """
-        from urllib.parse import urlparse
         from tavily import TavilyClient
 
         api_key = os.getenv("TAVILY_API_KEY")
@@ -417,7 +417,6 @@ def build_source_registry(research: dict) -> dict:
 
     Returns: {url: {"id": "S1", "title": ..., "url": ..., "domain": ...}}
     """
-    from urllib.parse import urlparse
     registry = {}
     counter = 1
     for hits in research.values():
