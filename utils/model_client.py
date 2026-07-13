@@ -28,6 +28,7 @@ from utils.base import BaseProvider, FallbackTrigger, AllProvidersExhausted
 from utils.groq_provider import (
     GroqProvider,
     TIER1_MODEL, TIER2_MODEL, TIER3_MODEL, TIER4_MODEL, TIER5_MODEL,
+    TIER6_MODEL, TIER7_MODEL,
 )
 
 SESSION_LOCK_KEY = "locked_provider_index"
@@ -36,19 +37,20 @@ CALL_LOG_KEY     = "m01_call_log"
 # Approximate pricing in USD per 1M tokens (input, output). As of June 2026.
 # These are estimates — actual billing may differ.
 APPROX_PRICING = {
-    "gemini-2.5-pro":                            (1.25,  10.00),
-    "gemini-3-flash-preview":                    (0.075,  0.30),
-    "gemini-3.1-flash-lite":                     (0.075,  0.30),
-    "gemini-2.5-flash":                          (0.075,  0.30),
-    "gemini-2.5-flash-lite":                     (0.075,  0.30),
-    "gemini-2.0-flash":                          (0.10,   0.40),
-    "gemini-2.0-flash-lite":                     (0.075,  0.30),
-    "gemini-flash-latest":                       (0.075,  0.30),
-    "qwen/qwen3.6-27b":                          (0.60,   3.00),  # Groq listed price — verify at groq.com/pricing
-    "qwen/qwen3-32b":                            (0.29,   0.59),
-    "openai/gpt-oss-120b":                       (0.90,   0.90),
-    "llama-3.1-8b-instant":                      (0.05,   0.08),
-    "openai/gpt-oss-20b":                        (0.30,   0.60),
+    "gemini-2.5-pro":                                   (1.25,  10.00),
+    "gemini-3-flash-preview":                           (0.075,  0.30),
+    "gemini-3.1-flash-lite":                            (0.075,  0.30),
+    "gemini-3.1-flash-lite-preview":                    (0.075,  0.30),
+    "gemini-2.5-flash":                                 (0.075,  0.30),
+    "gemini-2.5-flash-lite":                            (0.075,  0.30),
+    "gemini-flash-lite-latest":                         (0.075,  0.30),
+    "llama-3.3-70b-versatile":                          (0.59,   0.79),
+    "meta-llama/llama-4-scout-17b-16e-instruct":        (0.11,   0.34),
+    "qwen/qwen3.6-27b":                                 (0.60,   3.00),
+    "qwen/qwen3-32b":                                   (0.29,   0.59),
+    "openai/gpt-oss-120b":                              (0.90,   0.90),
+    "llama-3.1-8b-instant":                             (0.05,   0.08),
+    "openai/gpt-oss-20b":                               (0.30,   0.60),
 }
 
 
@@ -59,20 +61,23 @@ def build_chain() -> list[BaseProvider]:
     When GEMINI_API_KEY is present, Gemini models go first (better output quality).
     Groq models follow as the fallback tier.
 
-    Full order when both keys are set (13 providers):
-      [0]  gemini-3-flash-preview — GA, matches 2.5 Pro quality, 80K output, fastest Gemini
-      [1]  gemini-3.1-flash-lite  — outperforms 2.5 Flash on benchmarks, 381 t/s
-      [2]  gemini-2.5-flash       — strong hybrid reasoning, 65K output
-      [3]  gemini-2.5-flash-lite  — lighter 2.5, still better than 2.0 generation
-      [4]  gemini-2.0-flash       — deprecated June 2026, 8K output cap
-      [5]  gemini-2.0-flash-lite  — deprecated June 2026, 8K output cap
-      [6]  qwen3.6-27b            — Groq TIER1; replaces llama-3.3-70b-versatile (deprecated Jul 2, 2026)
-      [7]  qwen3-32b              — competitive coding and reasoning, 85.7% MMLU
-      [8]  gpt-oss-120b           — large reasoning model, benchmarks not fully published
-      [9]  llama-3.1-8b-instant   — smallest model, fast, high RPD
-      [10] gpt-oss-20b            — smaller/faster sibling to 120B, last Groq resort
-      [11] gemini-2.5-pro         — moved to near-last: never responds on free tier (silent hang)
-      [12] gemini-flash-latest    — unresolved alias, unpredictable limits, last resort only
+    Full order when both keys are set (13 providers) — verified July 13 2026:
+      [0]  gemini-3-flash-preview          — best Gemini quality, 80K output
+      [1]  gemini-3.1-flash-lite           — fast, reliable, 381 t/s
+      [2]  gemini-2.5-flash                — strong hybrid reasoning, 65K output
+      [3]  gemini-2.5-flash-lite           — lighter 2.5
+      [4]  gemini-3.1-flash-lite-preview   — confirmed working Jul 2026
+      [5]  gemini-flash-lite-latest        — confirmed working Jul 2026
+      [6]  llama-3.3-70b-versatile         — 70B, confirmed working; decommission Aug 16 2026
+      [7]  llama-4-scout-17b-16e           — Llama 4, confirmed working Jul 2026
+      [8]  qwen3.6-27b                     — strong instruction following
+      [9]  qwen3-32b                       — competitive reasoning
+      [10] gpt-oss-120b                    — large reasoning model
+      [11] llama-3.1-8b-instant            — fast, high RPD
+      [12] gpt-oss-20b                     — last Groq resort
+      [13] gemini-2.5-pro                  — silent hang on free tier, near-last
+    Removed: gemini-2.0-flash, gemini-2.0-flash-lite (free-tier quota=0, dead),
+             gemini-flash-latest (503 unavailable).
     """
     # Start with Groq as the base fallback tier
     providers: list[BaseProvider] = [
@@ -81,26 +86,26 @@ def build_chain() -> list[BaseProvider]:
         GroqProvider(TIER3_MODEL),
         GroqProvider(TIER4_MODEL),
         GroqProvider(TIER5_MODEL),
+        GroqProvider(TIER6_MODEL),
+        GroqProvider(TIER7_MODEL),
     ]
 
     if os.getenv("GEMINI_API_KEY"):
         from utils.gemini_provider import GeminiProvider
-        # Named Gemini models go at the front — best quality, known output limits.
-        # gemini-2.5-pro is excluded here: it never responds on the free tier (silent hang,
-        # not a 429), so putting it first costs a full timeout on every run. It goes near
-        # the end instead, after all working models, so it is still used if available.
-        # gemini-flash-latest is an unresolved alias with unpredictable limits — absolute last.
+        # Gemini models prepended in order — best quality first.
+        # gemini-2.5-pro: never responds on free tier (silent hang), goes near end.
+        # gemini-2.0-flash / gemini-2.0-flash-lite: free-tier quota=0, removed.
+        # gemini-flash-latest: 503 unavailable, removed.
         for model in reversed([
             "gemini-3-flash-preview",
             "gemini-3.1-flash-lite",
             "gemini-2.5-flash",
             "gemini-2.5-flash-lite",
-            "gemini-2.0-flash",
-            "gemini-2.0-flash-lite",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-flash-lite-latest",
         ]):
             providers.insert(0, GeminiProvider(model))
         providers.append(GeminiProvider("gemini-2.5-pro"))
-        providers.append(GeminiProvider("gemini-flash-latest"))
 
     return providers
 
