@@ -141,7 +141,7 @@ def _upload_with_retries(client, app_name, module_name, file_bytes, file_name, f
             client.storage.from_(app_name).upload(
                 path=storage_path,
                 file=file_bytes,
-                file_options={"content-type": content_type},
+                file_options={"content-type": content_type, "upsert": "true"},
             )
             return client.storage.from_(app_name).get_public_url(storage_path)
         except Exception as e:

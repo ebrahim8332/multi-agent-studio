@@ -97,6 +97,7 @@ _STATE_KEYS = [
     "m01_writer_attempt", "m01_writer_feedback", "m01_fc_feedback", "m01_fc_feedback_draft", "m01_judge_feedback_draft", "m01_judge_editing", "m01_fc_editing",
     "m01_judge_result", "m01_fact_check_result",
     "locked_provider_index", "locked_model_name",
+    "m01_archive_url",
 ]
 
 
@@ -2327,31 +2328,44 @@ def _show_download() -> None:
         "model_used":             model,
     }
 
-    with st.spinner("Archiving report to permanent storage..."):
-        archive_url = save_report(
-            app_name="multi-agent-studio",
-            module_name="m01-research-assistant",
-            file_bytes=doc_bytes,
-            file_name=filename,
-            file_type="docx",
-            user_prompt=topic,
-            interim_steps=interim_summary,
-            final_output_summary=summary_text,
-        )
-        save_report(
-            app_name="multi-agent-studio",
-            module_name="m01-research-assistant",
-            file_bytes=quality_bytes,
-            file_name=quality_filename,
-            file_type="docx",
-            user_prompt=topic,
-            final_output_summary=f"Quality report for: {summary_text}",
-        )
-
-    if archive_url is None:
-        st.warning("⚠️ Report ready below. Cloud backup failed — download still works.")
+    # Archive once per completed run, not once per rerun. Streamlit reruns the
+    # whole script on things as small as a browser reconnect — with no guard
+    # here, a rerun of this "complete" screen re-uploaded the same report a
+    # second time under the same deterministic filename, which Supabase
+    # correctly rejected as a duplicate, producing a false "backup failed"
+    # warning even though the original upload had already succeeded.
+    if "m01_archive_url" not in st.session_state:
+        with st.spinner("Archiving report to permanent storage..."):
+            archive_url = save_report(
+                app_name="multi-agent-studio",
+                module_name="m01-research-assistant",
+                file_bytes=doc_bytes,
+                file_name=filename,
+                file_type="docx",
+                user_prompt=topic,
+                interim_steps=interim_summary,
+                final_output_summary=summary_text,
+            )
+            save_report(
+                app_name="multi-agent-studio",
+                module_name="m01-research-assistant",
+                file_bytes=quality_bytes,
+                file_name=quality_filename,
+                file_type="docx",
+                user_prompt=topic,
+                final_output_summary=f"Quality report for: {summary_text}",
+            )
+        st.session_state["m01_archive_url"] = archive_url
+        if archive_url is None:
+            st.warning("⚠️ Report ready below. Cloud backup failed — download still works.")
+        else:
+            notify_archived()
     else:
-        notify_archived()
+        # Re-displayed on a later rerun — no new upload, and no repeat chime.
+        if st.session_state["m01_archive_url"] is None:
+            st.warning("⚠️ Report ready below. Cloud backup failed — download still works.")
+        else:
+            st.caption("☁️ Archived to permanent storage")
 
     col1, col2 = st.columns(2)
     with col1:
