@@ -264,11 +264,28 @@ class SearchChain:
                     seen_urls.add(url)
                     selected.append(hit)
 
-            # Serper fallback only when both primary providers returned nothing
+            # Filter out dead links, paywalled pages, 404s, and low-authority
+            # domains BEFORE deciding whether Serper needs to fill in. Doing
+            # this after the emptiness check (the old order) meant a question
+            # whose only hits turned out to be dead links or social-media
+            # pages looked "non-empty" at that check, so Serper never fired
+            # even though it exists for exactly this situation.
+            selected = _verify_urls_parallel(selected)
+            selected = [
+                hit for hit in selected
+                if urlparse(hit.get("url", "")).netloc.replace("www.", "") not in _ENRICH_SKIP_DOMAINS
+            ]
+
+            # Serper fallback only when Tavily+Exa left nothing usable
             serper_count = 0
             if not selected:
                 try:
                     serper_hits = _search_serper(query, max_results)
+                    serper_hits = _verify_urls_parallel(serper_hits)
+                    serper_hits = [
+                        hit for hit in serper_hits
+                        if urlparse(hit.get("url", "")).netloc.replace("www.", "") not in _ENRICH_SKIP_DOMAINS
+                    ]
                     for hit in serper_hits:
                         url = hit.get("url", "")
                         if url and url not in seen_urls:
@@ -277,15 +294,6 @@ class SearchChain:
                     serper_count = len(serper_hits)
                 except Exception:
                     pass
-
-            # Filter out dead links, paywalled pages, and 404s
-            selected = _verify_urls_parallel(selected)
-
-            # Remove low-authority domains (YouTube, LinkedIn, Facebook, etc.)
-            selected = [
-                hit for hit in selected
-                if urlparse(hit.get("url", "")).netloc.replace("www.", "") not in _ENRICH_SKIP_DOMAINS
-            ]
 
             research[query] = selected
             provider_stats[query] = {

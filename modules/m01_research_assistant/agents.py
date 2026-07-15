@@ -10,6 +10,7 @@ LangGraph merges it back into the full state before passing to the next node.
 
 import re
 import json
+from datetime import date
 from utils.search_client import get_search_chain, build_source_registry
 
 # ── JSON schemas for structured agents ───────────────────────────────────────
@@ -310,17 +311,28 @@ Citation rules — follow exactly:
   general statements, named studies without a specific figure, your own
   analysis, or transition sentences.
 - Maximum 10 citation tags in the entire paper. Be selective — only the most
-  important quantitative claims need a tag.
+  important quantitative claims need a tag. Too many citations distracts the
+  reader and is not independently verified anyway, so restraint matters more
+  than coverage.
 - Each source below has an ID like [S1], [S2]. Place the tag immediately after
   the number or percentage it supports, e.g. "methane leakage reached 2.3% [S4]".
 - Match the tag to the source that actually contains the figure. Do not guess.
-- Sources published before 2024: do not cite specific numbers from them.
-  Generalize instead — write "studies suggest..." or "evidence indicates..."
-  without including the figure.
-- If a source has no publication year shown, you may still cite it, but prefer
-  dated recent sources for all quantitative claims.
+- Sources marked [STALE] in the evidence below: do not cite specific numbers
+  from them. Generalize instead — write "studies suggest..." or "evidence
+  indicates..." without including the figure. General background use of a
+  stale source (context, non-quantitative statements) is still fine.
+- If a source has no publisher name or publication year shown in the evidence
+  below, do not cite a number from it. Skip the citation rather than invent
+  a publisher or year — an untraceable citation is worse than none.
 - Do not tag the same figure with multiple tags unless two sources confirm it.
 """
+
+
+# Sources older than this many years should not be cited for specific numbers
+# (CITATION_RULES tells the Writer to skip [STALE]-marked sources for figures).
+# Computed against today's year each run rather than a hardcoded year, so this
+# rule stays correct without needing to be revisited every year.
+_STALE_CUTOFF_YEARS = 2
 
 
 def _build_evidence_text(questions: list, research: dict, critic_ratings: dict, registry: dict) -> str:
@@ -328,8 +340,15 @@ def _build_evidence_text(questions: list, research: dict, critic_ratings: dict, 
     Builds the evidence block shared by Writer A and Writer B: one block per
     question, each source tagged with its registry ID (e.g. [S3]) so the
     Writer can cite it inline per CITATION_RULES.
+
+    Staleness is computed here in Python (current year minus
+    _STALE_CUTOFF_YEARS) and marked inline as [STALE] — the model is told
+    which sources are stale, not asked to work it out itself from a year
+    number, the same "Python computes, model reads the result" pattern used
+    elsewhere in this pipeline (word counts, citation-tag counts).
     """
     from urllib.parse import urlparse
+    cutoff_year = date.today().year - _STALE_CUTOFF_YEARS
     evidence_blocks = []
     for q in questions:
         rating = critic_ratings.get(q, "Adequate")
@@ -337,19 +356,23 @@ def _build_evidence_text(questions: list, research: dict, critic_ratings: dict, 
         snippets = []
         for hit in hits:
             title   = hit.get("title", "")
-            content = hit.get("content", "")[:2500]
+            # Capped at 3000, matching enrich_top_sources()'s fetch depth —
+            # previously capped at 2500, silently discarding the last 500
+            # characters of every enriched source before the Writer saw it.
+            content = hit.get("content", "")[:3000]
             url     = hit.get("url", "")
             entry = registry.get(url, {})
             sid   = entry.get("id", "S?")
             pub   = entry.get("publisher", "")
             year  = entry.get("published_year", "")
+            stale = " [STALE]" if year.isdigit() and int(year) < cutoff_year else ""
             try:
                 domain = urlparse(url).netloc.replace("www.", "")
             except Exception:
                 domain = ""
             pub_str    = f" ({pub}, {year})" if year else f" ({pub})" if pub else ""
             domain_str = f" [{domain}]" if domain and not pub else ""
-            snippets.append(f"  - [{sid}] {title}{pub_str}{domain_str}: {content}")
+            snippets.append(f"  - [{sid}]{stale} {title}{pub_str}{domain_str}: {content}")
         evidence_blocks.append(
             f"Question: {q} [Critic source rating: {rating}]\n"
             + ("\n".join(snippets) if snippets else "  - No sources found")
@@ -850,7 +873,9 @@ def run_writer(state: dict, chain, user_feedback: str = "") -> dict:
             "role": "system",
             "content": (
                 "You are a research writer producing structured, well-sourced papers "
-                "for senior business and technical audiences. "
+                "for senior business and technical audiences. Use only the sources "
+                "provided below. Do not fabricate evidence, statistics, or examples "
+                "that are not present in the evidence given. "
                 f"{STYLE_RULES}"
                 f"{CITATION_RULES}"
             ),
@@ -1126,18 +1151,6 @@ def run_editor(state: dict, chain) -> dict:
         if weak_claims else ""
     )
 
-    # Points from the losing draft that the Debate Judge said are worth keeping
-    debate_result   = state.get("debate_result", {})
-    incorporate     = debate_result.get("incorporate", []) if isinstance(debate_result, dict) else []
-    incorporate_str = (
-        "\n\nThe Debate Judge identified these points from the alternative draft that should be "
-        "woven into this paper where they strengthen the argument:\n"
-        + "\n".join(f"- {pt}" for pt in incorporate)
-        + "\nIncorporate them naturally — do not force them in awkwardly, "
-        "but do not ignore them. This is editing task 10a.\n"
-        if incorporate else ""
-    )
-
     messages = [
         {
             "role": "system",
@@ -1155,11 +1168,11 @@ def run_editor(state: dict, chain) -> dict:
                 + (f"Paper title: {title}\n" if title else "")
                 + f"Audience: {audience}\n"
                 f"Format: {format_style}\n"
-                f"Target length: approximately {target_words:,} words\n"
+                f"Target length: {target_words:,}-{max_words:,} words "
+                "(hard floor and ceiling — see editing task 6 below).\n"
                 f"{angle_instruction}"
                 f"\nWhat this format requires:\n{format_instructions}\n\n"
                 f"Source quality assessment from the Critic:\n{critique}\n\n"
-                + incorporate_str +
                 "Edit the following paper:\n\n"
                 f"{draft}\n\n"
                 "Editing tasks — complete all of them:\n"
@@ -1171,7 +1184,10 @@ def run_editor(state: dict, chain) -> dict:
                 f"6. Edit to stay within {target_words:,}–{max_words:,} words. "
                 f"The minimum of {target_words:,} words is a hard floor — do not go below it. "
                 f"The maximum of {max_words:,} words is a hard ceiling — do not go above it. "
-                "Expand thin sections if below the floor. Cut repetitive or padded content if above the ceiling.\n"
+                "If below the floor, expand by deepening the analysis and implications of "
+                "evidence already present in the draft. Do not introduce new facts, figures, "
+                "statistics, or examples that are not already in the draft. "
+                "Cut repetitive or padded content if above the ceiling.\n"
                 "7. Soften any claim that uses language stronger than the evidence supports — "
                 "use the Critic's source ratings to identify these\n"
                 "8. Preserve all ## section headings and ### subheadings exactly as written — "

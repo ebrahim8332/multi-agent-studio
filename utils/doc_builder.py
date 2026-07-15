@@ -357,16 +357,27 @@ def build_research_doc(state: dict) -> bytes:
         _build_key_numbers_table(doc, final_text, registry)
 
     # ── References ───────────────────────────────────────────────────────────
+    # Restricted to sources actually cited in the text (their [S#] tag appears
+    # in final_text), not every source consulted during research — a paper
+    # with a 10-citation cap but 40+ consulted sources would otherwise show a
+    # References list far longer than the citations it's supposed to explain.
+    # Falls back to the full registry only if no citation tags survived at all.
+    cited_ids     = set(re.findall(r'\[S(\d+)\]', final_text))
+    cited_entries = [e for e in registry.values() if e["id"][1:] in cited_ids]
     if registry:
+        entries_to_show = cited_entries if cited_entries else list(registry.values())
         doc.add_paragraph("")
         doc.add_heading("References", level=1)
         note_para = doc.add_paragraph()
-        note_run  = note_para.add_run(
-            "Sources consulted during research. Cited figures link directly to their source in the paper text."
+        note_text = (
+            "Sources cited in this paper. Click a source name in the text to open it directly."
+            if cited_entries else
+            "Sources consulted during research. No citation tags were found in the final text."
         )
+        note_run  = note_para.add_run(note_text)
         note_run.font.size = Pt(9)
         note_run.font.color.rgb = GREY
-        for entry in sorted(registry.values(), key=lambda e: int(e["id"][1:])):
+        for entry in sorted(entries_to_show, key=lambda e: int(e["id"][1:])):
             para = doc.add_paragraph()
             para.paragraph_format.space_after = Pt(3)
             id_run = para.add_run(f"[{entry['id']}] ")
