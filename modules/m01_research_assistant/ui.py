@@ -97,7 +97,7 @@ _STATE_KEYS = [
     "m01_writer_attempt", "m01_writer_feedback", "m01_fc_feedback", "m01_fc_feedback_draft", "m01_judge_feedback_draft", "m01_judge_editing", "m01_fc_editing",
     "m01_judge_result", "m01_fact_check_result",
     "locked_provider_index", "locked_model_name",
-    "m01_archive_url",
+    "m01_archive_url", "m01_run_timestamp",
 ]
 
 
@@ -2276,10 +2276,21 @@ def _show_download() -> None:
     st.success("Research complete.")
     st.caption(f"Final model: {model}")
 
+    # A run timestamp, generated once per completed run (not once per rerun)
+    # and reused for both the download filename and the archive upload path.
+    # Without it, running the same topic twice produces the exact same
+    # filename both times, and the second archive upload collides with the
+    # first as a duplicate (confirmed directly against live Supabase) --
+    # every real run now gets its own permanent, non-colliding record.
+    if "m01_run_timestamp" not in st.session_state:
+        from datetime import datetime
+        st.session_state["m01_run_timestamp"] = datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_timestamp = st.session_state["m01_run_timestamp"]
+
     slug             = topic.lower()[:40].replace(" ", "-").replace("/", "-")
     slug             = "".join(c for c in slug if c.isalnum() or c == "-")
-    filename         = f"research-{slug}-v1.docx"
-    quality_filename = f"research-{slug}-v1-quality.docx"
+    filename         = f"research-{slug}-{run_timestamp}.docx"
+    quality_filename = f"research-{slug}-{run_timestamp}-quality.docx"
 
     if not full_state.get("final", "").strip():
         st.warning(

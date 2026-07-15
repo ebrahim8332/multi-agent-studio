@@ -5,10 +5,30 @@ Renders the sidebar navigation and routes to the selected module.
 Modules not yet built show a Coming Soon placeholder automatically.
 """
 
+import os
+import subprocess
 import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _get_git_version() -> str:
+    """
+    Returns the short commit hash of the code currently running, so a
+    deployed app's actual version can be checked at a glance instead of
+    inferred from behavior. Degrades to "unknown" rather than breaking the
+    app if git isn't available in the deploy environment for any reason.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+        return result.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
 
 st.set_page_config(
     page_title="Multi-Agent Studio",
@@ -38,6 +58,9 @@ selection = st.sidebar.radio(
     list(MODULES.keys()),
     label_visibility="collapsed",
 )
+
+st.sidebar.markdown("---")
+st.sidebar.caption(f"Build: {_get_git_version()}")
 
 # ── Main area ──────────────────────────────────────────────────────────────
 
