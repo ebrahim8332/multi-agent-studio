@@ -138,10 +138,19 @@ def _upload_with_retries(client, app_name, module_name, file_bytes, file_name, f
 
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
+            # No upsert: the anon key is scoped INSERT-only via RLS (see the
+            # Report Archive setup guide). Requesting upsert:true made Supabase
+            # require UPDATE permission too, which this key doesn't have --
+            # confirmed directly: the exact same call succeeds without upsert
+            # and fails with "new row violates row-level security policy" the
+            # instant upsert is added, even on a brand-new path that has never
+            # been uploaded before. A real duplicate-path collision (e.g.
+            # running the same topic twice) is handled by the idempotency
+            # guard in ui.py instead, not by this flag.
             client.storage.from_(app_name).upload(
                 path=storage_path,
                 file=file_bytes,
-                file_options={"content-type": content_type, "upsert": "true"},
+                file_options={"content-type": content_type},
             )
             return client.storage.from_(app_name).get_public_url(storage_path)
         except Exception as e:
