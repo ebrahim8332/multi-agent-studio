@@ -75,6 +75,7 @@ _STATE_KEYS = [
     # in session state and silently carries into ticker B's run after
     # Start Over.
     "_fallback_errors",
+    "m02_archive_url",
 ]
 
 RISK_CATEGORY_KEYWORDS = {
@@ -998,22 +999,36 @@ def render() -> None:
                 }
                 summary_text = f"{rating} rating, {confidence} confidence, for {company_name} ({ticker})"
 
-                with st.spinner("Archiving report to permanent storage..."):
-                    archive_url = save_report(
-                        app_name="multi-agent-studio",
-                        module_name="m02-stock",
-                        file_bytes=doc_bytes,
-                        file_name=file_name,
-                        file_type="docx",
-                        user_prompt=f"{ticker} ({company_name})",
-                        interim_steps=interim_summary,
-                        final_output_summary=summary_text,
-                    )
-
-                if archive_url is None:
-                    st.warning("⚠️ Report ready below. Cloud backup failed — download still works.")
+                # Archive once per completed run, not once per rerun. Streamlit
+                # reruns the whole script on things as small as a browser
+                # reconnect — with no guard here, a rerun re-uploaded the same
+                # report under the same deterministic (ticker-based) filename,
+                # which Supabase rejects as a duplicate, producing a false
+                # "backup failed" warning even after a real upload succeeded.
+                # Same bug, same fix as m01_research_assistant/ui.py.
+                if "m02_archive_url" not in st.session_state:
+                    with st.spinner("Archiving report to permanent storage..."):
+                        archive_url = save_report(
+                            app_name="multi-agent-studio",
+                            module_name="m02-stock",
+                            file_bytes=doc_bytes,
+                            file_name=file_name,
+                            file_type="docx",
+                            user_prompt=f"{ticker} ({company_name})",
+                            interim_steps=interim_summary,
+                            final_output_summary=summary_text,
+                        )
+                    st.session_state["m02_archive_url"] = archive_url
+                    if archive_url is None:
+                        st.warning("⚠️ Report ready below. Cloud backup failed — download still works.")
+                    else:
+                        notify_archived()
                 else:
-                    notify_archived()
+                    # Re-displayed on a later rerun — no new upload, no repeat chime.
+                    if st.session_state["m02_archive_url"] is None:
+                        st.warning("⚠️ Report ready below. Cloud backup failed — download still works.")
+                    else:
+                        st.caption("☁️ Archived to permanent storage")
 
                 st.download_button(
                     "⬇️ Download research note (.docx)", data=doc_bytes,
