@@ -127,10 +127,6 @@ def _add_bold_runs(paragraph, text: str) -> None:
             paragraph.add_run(part)
 
 
-_CITATION_TOKEN_RE = re.compile(r"(\*\*.*?\*\*|\[S\d+\])")
-_CITATION_RE       = re.compile(r"^\[S\d+\]$")
-
-
 def _add_hyperlink(paragraph, text: str, url: str) -> None:
     """Inserts a clickable hyperlink run into a paragraph."""
     import docx.opc.constants as _opc
@@ -154,36 +150,6 @@ def _add_hyperlink(paragraph, text: str, url: str) -> None:
     paragraph._p.append(hl)
 
 
-def _add_runs_with_citations(paragraph, text: str, registry: dict = None) -> None:
-    """
-    Adds text to a paragraph converting **bold** markers to bold runs and
-    [S#] tags to inline (Publisher, Year) hyperlinks when a registry is provided,
-    or superscript runs when it is not.
-    """
-    for part in _CITATION_TOKEN_RE.split(text):
-        if not part:
-            continue
-        if part.startswith("**") and part.endswith("**"):
-            run = paragraph.add_run(part[2:-2])
-            run.bold = True
-        elif _CITATION_RE.match(part):
-            if registry:
-                sid   = part[1:-1]  # "[S3]" → "S3"
-                entry = next((e for e in registry.values() if e["id"] == sid), None)
-                if entry:
-                    pub   = entry.get("publisher", "") or entry.get("domain", "")
-                    year  = entry.get("published_year", "")
-                    label = f"({pub}, {year})" if year else f"({pub})" if pub else part
-                    _add_hyperlink(paragraph, label, entry["url"])
-                    continue
-            run = paragraph.add_run(part)
-            run.font.superscript = True
-            run.font.size = Pt(9)
-            run.font.color.rgb = BLUE
-        else:
-            paragraph.add_run(part)
-
-
 def _is_bullet(line: str) -> tuple[bool, str]:
     """
     Returns (True, text) if the line is a bullet point.
@@ -196,7 +162,7 @@ def _is_bullet(line: str) -> tuple[bool, str]:
     return False, stripped
 
 
-def _add_markdown_content(doc: Document, text: str, registry: dict = None) -> None:
+def _add_markdown_content(doc: Document, text: str) -> None:
     """
     Parses markdown-style text and adds it to the document.
 
@@ -208,6 +174,11 @@ def _add_markdown_content(doc: Document, text: str, registry: dict = None) -> No
         **bold**     →  bold run
         blank line   →  paragraph spacer
         plain text   →  Normal paragraph
+
+    Assumes [S#] citation tags have already been stripped from `text` before
+    this is called — the paper itself carries no inline citations. See
+    build_research_doc()'s "Sources" section and the Quality Report for
+    where source detail actually lives.
     """
     lines = text.split("\n")
     i = 0
@@ -233,78 +204,13 @@ def _add_markdown_content(doc: Document, text: str, registry: dict = None) -> No
                 para = doc.add_paragraph(style="List Bullet")
                 para.paragraph_format.left_indent  = Inches(0.3)
                 para.paragraph_format.space_after  = Pt(3)
-                _add_runs_with_citations(para, bul_text, registry)
+                _add_bold_runs(para, bul_text)
             else:
                 para = doc.add_paragraph()
                 para.paragraph_format.space_after = Pt(6)
-                _add_runs_with_citations(para, stripped, registry)
+                _add_bold_runs(para, stripped)
 
         i += 1
-
-
-def _build_key_numbers_table(doc: Document, final_text: str, registry: dict) -> None:
-    """
-    Scans the paper for sentences containing [S#] tags and at least one
-    number or percentage, then builds a three-column Key Numbers table:
-    Claim | Source | Year.
-    """
-    sentence_re = re.compile(r'([^.!?\n]*\[S\d+\][^.!?\n]*[.!?\n]?)')
-    number_re   = re.compile(
-        r'\b\d[\d,.]*\s*%'
-        r'|\b\d[\d,.]*\s*(?:billion|million|trillion|bn|mn|percent)\b'
-        r'|\b\d+\.?\d+\b'
-    )
-    rows     = []
-    seen_ids = set()
-    for sentence in sentence_re.findall(final_text):
-        sentence = sentence.strip()
-        sid_nums = re.findall(r'\[S(\d+)\]', sentence)
-        if not sid_nums:
-            continue
-        clean = re.sub(r'\[S\d+\]', '', sentence).strip()
-        if not number_re.search(clean):
-            continue
-        for sid_num in sid_nums:
-            sid = f"S{sid_num}"
-            if sid in seen_ids:
-                continue
-            seen_ids.add(sid)
-            entry = next((e for e in registry.values() if e["id"] == sid), None)
-            if not entry:
-                continue
-            pub  = entry.get("publisher", "") or entry.get("domain", "")
-            year = entry.get("published_year", "")
-            rows.append((clean[:220], pub, year, entry.get("url", "")))
-
-    if not rows:
-        return
-
-    doc.add_paragraph("")
-    doc.add_heading("Key Numbers", level=1)
-    note_para = doc.add_paragraph()
-    note_run  = note_para.add_run(
-        "Cited figures in this paper. Click a source name in the paper text to open it directly."
-    )
-    note_run.font.size      = Pt(9)
-    note_run.font.color.rgb = GREY
-
-    table = doc.add_table(rows=1, cols=3)
-    table.style = "Table Grid"
-    hdr = table.rows[0].cells
-    for i, label in enumerate(("Claim", "Source", "Year")):
-        hdr[i].text = label
-        run = hdr[i].paragraphs[0].runs[0]
-        run.bold           = True
-        run.font.size      = Pt(9)
-        run.font.color.rgb = NAVY
-
-    for claim, pub, year, url in rows:
-        cells = table.add_row().cells
-        cells[0].text = claim
-        cells[1].text = pub
-        cells[2].text = year or "n/d"
-        for cell in cells:
-            cell.paragraphs[0].runs[0].font.size = Pt(9)
 
 
 def build_research_doc(state: dict) -> bytes:
@@ -349,45 +255,44 @@ def build_research_doc(state: dict) -> bytes:
     _add_horizontal_rule(doc)
 
     # ── Main content ─────────────────────────────────────────────────────────
-    registry = build_source_registry(research)
-    _add_markdown_content(doc, final_text, registry)
+    # No inline citations in the paper itself — [S#] tags are stripped here.
+    # They still exist internally (Writer/Editor tag them, Fact Checker
+    # matches against them) but that machinery is for verification quality,
+    # not for the reader. Claim-level source detail lives in the Quality
+    # Report instead, which stays with Alnoor and is never published — inline
+    # citations were creating a false impression that every tagged claim had
+    # been individually verified, when only the Fact Checker's ~15-20 sampled
+    # claims actually were.
+    registry   = build_source_registry(research)
+    clean_text = re.sub(r'\s*\[S\d+\]', '', final_text)
+    _add_markdown_content(doc, clean_text)
 
-    # ── Key Numbers table ─────────────────────────────────────────────────────
-    if registry:
-        _build_key_numbers_table(doc, final_text, registry)
-
-    # ── References ───────────────────────────────────────────────────────────
-    # Restricted to sources actually cited in the text (their [S#] tag appears
-    # in final_text), not every source consulted during research — a paper
-    # with a 10-citation cap but 40+ consulted sources would otherwise show a
-    # References list far longer than the citations it's supposed to explain.
-    # Falls back to the full registry only if no citation tags survived at all.
-    cited_ids     = set(re.findall(r'\[S(\d+)\]', final_text))
-    cited_entries = [e for e in registry.values() if e["id"][1:] in cited_ids]
-    if registry:
-        entries_to_show = cited_entries if cited_entries else list(registry.values())
+    # ── Sources ──────────────────────────────────────────────────────────────
+    # Limited to sources the Researcher enriched with full article text
+    # (Tavily Extract) — the ones substantive enough to deep-read, not every
+    # source the search providers returned. A "further reading" gesture, not
+    # a verification mechanism, so it doesn't need to be exhaustive.
+    enriched_urls = {
+        hit.get("url", "")
+        for hits in research.values()
+        for hit in hits
+        if hit.get("enriched")
+    }
+    enriched_entries = [e for e in registry.values() if e["url"] in enriched_urls]
+    if enriched_entries:
         doc.add_paragraph("")
-        doc.add_heading("References", level=1)
+        doc.add_heading("Sources", level=1)
         note_para = doc.add_paragraph()
-        note_text = (
-            "Sources cited in this paper. Click a source name in the text to open it directly."
-            if cited_entries else
-            "Sources consulted during research. No citation tags were found in the final text."
+        note_run  = note_para.add_run(
+            "Sources this paper drew on most heavily during research."
         )
-        note_run  = note_para.add_run(note_text)
         note_run.font.size = Pt(9)
         note_run.font.color.rgb = GREY
-        for entry in sorted(entries_to_show, key=lambda e: int(e["id"][1:])):
-            para = doc.add_paragraph()
+        for entry in sorted(enriched_entries, key=lambda e: int(e["id"][1:])):
+            para = doc.add_paragraph(style="List Bullet")
+            para.paragraph_format.left_indent = Inches(0.3)
             para.paragraph_format.space_after = Pt(3)
-            id_run = para.add_run(f"[{entry['id']}] ")
-            id_run.bold = True
-            id_run.font.size = Pt(9)
-            title_run = para.add_run(f"{entry['title']}  ")
-            title_run.font.size = Pt(9)
-            url_run = para.add_run(entry["url"])
-            url_run.font.size = Pt(9)
-            url_run.font.color.rgb = GREY
+            _add_hyperlink(para, entry["title"], entry["url"])
     elif sources:
         doc.add_paragraph("")
         doc.add_heading("Sources", level=1)
@@ -585,7 +490,12 @@ def build_research_quality_doc(quality_state: dict) -> bytes:
             row = table.add_row().cells
             row[0].text = c.get("verdict", "Weak")
             row[1].text = c.get("claim", "")[:150]
-            row[2].text = c.get("source", "")[:80]
+            source_url = c.get("source_url", "")
+            if source_url:
+                row[2].text = ""
+                _add_hyperlink(row[2].paragraphs[0], c.get("source", "")[:80], source_url)
+            else:
+                row[2].text = c.get("source", "")[:80]
             tag = c.get("cited_tag", "")
             cited_text = f"[{tag}]" if tag else "—"
             if c.get("citation_mismatch"):

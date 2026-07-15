@@ -406,7 +406,8 @@ def _resolve_claim_sources(claims: list, registry: dict) -> list:
         c["matched_id"] = matched_id
         c["cited_tag"]  = cited_tag
         entry = by_id.get(matched_id)
-        c["source"] = entry["title"] if entry else "none found"
+        c["source"]     = entry["title"] if entry else "none found"
+        c["source_url"] = entry["url"] if entry else ""
         c["citation_mismatch"] = bool(cited_tag) and bool(matched_id) and cited_tag != matched_id
 
     return claims
