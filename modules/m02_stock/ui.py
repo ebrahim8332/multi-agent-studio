@@ -997,7 +997,7 @@ def render() -> None:
                     "fact_check_flagged": pipeline_state.get("fact_check_flagged"),
                     "model_used": pipeline_state.get("model_used"),
                 }
-                summary_text = f"{rating} rating, {confidence} confidence, for {company_name} ({ticker})"
+                summary_text = f"{company_name} ({ticker}) — {rating} rating, {confidence} confidence"
 
                 # Archive once per completed run, not once per rerun. Streamlit
                 # reruns the whole script on things as small as a browser

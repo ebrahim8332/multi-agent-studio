@@ -2324,7 +2324,7 @@ def _show_download() -> None:
     debate_result     = full_state.get("debate_result", {})
     judge_scores      = {dim: v.get("score") for dim, v in judge_result.get("scores", {}).items()}
     word_count        = len(full_state.get("final", "").split())
-    summary_text      = f"{word_count}-word {inputs.get('format_style', 'White Paper')} on '{topic}'"
+    summary_text      = f"{topic} — {word_count}-word {inputs.get('format_style', 'White Paper')}"
 
     # Short structured summary only — not the full agent transcripts — to stay
     # light on the shared Supabase free tier. See universal-report-archive-spec.
